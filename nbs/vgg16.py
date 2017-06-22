@@ -114,10 +114,11 @@ class Vgg16():
         """
         model = self.model
         model.layers.pop()
-        for layer in model.layers: layer.trainable=False
         output = model.layers[-1].output
-        prediction = Dense(num, activation='softmax')(output)
-        self.model = Model(inputs = model.input, outputs = prediction)
+        pred = Dense(num, activation='softmax')(output)
+        self.model = Model(inputs = model.input, outputs = pred)
+        for layer in self.model.layers[:22]:
+            layer.trainable = False
         self.compile()
 
     def finetune(self, batches):
