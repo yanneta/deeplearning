@@ -16,9 +16,9 @@ from keras.layers.convolutional import Convolution2D, MaxPooling2D, ZeroPadding2
 from keras.layers.pooling import GlobalAveragePooling2D
 from keras.optimizers import SGD, RMSprop, Adam
 from keras.preprocessing import image
+from keras.applications.vgg16 import VGG16
 
-
-vgg_mean = np.array([123.68, 116.779, 103.939], dtype=np.float32).reshape((3,1,1))
+vgg_mean = np.array([123.68, 116.779, 103.939], dtype=np.float32).reshape((1,1,3))
 def vgg_preprocess(x):
     """
         Subtracts the mean RGB value, and transposes RGB to BGR.
@@ -30,7 +30,8 @@ def vgg_preprocess(x):
             Image array (height x width x transposed_channels)
     """
     x = x - vgg_mean
-    return x[:, ::-1] # reverse axis rgb->bgr
+    return x
+    #return x[:, ::-1] # reverse axis rgb->bgr
 
 
 class Vgg16():
@@ -87,10 +88,10 @@ class Vgg16():
             Args:   None
             Returns:   None
         """
-        # TODO check if preprocess is needed.
         self.model = VGG16(weights='imagenet', include_top=True)
 
-    def get_batches(self, path, gen=image.ImageDataGenerator(), shuffle=True, batch_size=8, class_mode='categorical'):
+    def get_batches(self, path, gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess),
+                    shuffle=True, batch_size=8, class_mode='categorical'):
         """
             Takes the path to a directory, and generates batches of augmented/normalized data. Yields batches indefinitely, in an infinite loop.
 
@@ -148,22 +149,22 @@ class Vgg16():
                 loss='categorical_crossentropy', metrics=['accuracy'])
 
 
-    def fit_data(self, trn, labels,  val, val_labels,  nb_epoch=1, batch_size=64):
+    def fit_data(self, trn, labels,  val, val_labels,  epochs=1, batch_size=64):
         """
             Trains the model for a fixed number of epochs (iterations on a dataset).
             See Keras documentation: https://keras.io/models/model/
         """
-        self.model.fit(trn, labels, nb_epoch=nb_epoch,
+        self.model.fit(trn, labels, epochs=epochs,
                 validation_data=(val, val_labels), batch_size=batch_size)
 
 
-    def fit(self, batches, val_batches, nb_epoch=1):
+    def fit(self, batches, val_batches, epochs=1):
         """
             Fits the model on data yielded batch-by-batch by a Python generator.
             See Keras documentation: https://keras.io/models/model/
         """
-        self.model.fit_generator(batches, samples_per_epoch=batches.samples, nb_epoch=nb_epoch,
-                validation_data=val_batches, nb_val_samples=val_batches.samples)
+        self.model.fit_generator(batches, steps_per_epoch=batches.samples, epochs=epochs,
+                validation_data=val_batches, validation_steps=val_batches.samples)
 
 
     def test(self, path, batch_size=8):
