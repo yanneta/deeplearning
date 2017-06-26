@@ -17,22 +17,21 @@ from keras.layers.pooling import GlobalAveragePooling2D
 from keras.optimizers import SGD, RMSprop, Adam
 from keras.preprocessing import image
 from keras.applications.vgg16 import VGG16
+from keras.applications.imagenet_utils import preprocess_input
 
-vgg_mean = np.array([123.68, 116.779, 103.939], dtype=np.float32).reshape((1,1,3))
+vgg_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((1,1,3))
 def vgg_preprocess(x):
     """
         Subtracts the mean RGB value, and transposes RGB to BGR.
         The mean RGB was computed on the image set used to train the VGG model.
-
         Args: 
             x: Image array (height x width x channels)
         Returns:
             Image array (height x width x transposed_channels)
     """
+    x = x[:, :, ::-1] # reverse axis rgb->bgr
     x = x - vgg_mean
     return x
-    #return x[:, ::-1] # reverse axis rgb->bgr
-
 
 class Vgg16():
     """
@@ -89,7 +88,7 @@ class Vgg16():
             Returns:   None
         """
         self.model = VGG16(weights='imagenet', include_top=True)
-
+    # gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess)
     def get_batches(self, path, gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess),
                     shuffle=True, batch_size=8, class_mode='categorical'):
         """
