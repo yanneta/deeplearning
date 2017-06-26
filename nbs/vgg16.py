@@ -17,7 +17,10 @@ from keras.layers.pooling import GlobalAveragePooling2D
 from keras.optimizers import SGD, RMSprop, Adam
 from keras.preprocessing import image
 from keras.applications.vgg16 import VGG16
-from keras.applications.imagenet_utils import preprocess_input
+
+
+# This next function is similar to 
+# from keras.applications.imagenet_utils import preprocess_input
 
 vgg_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((1,1,3))
 def vgg_preprocess(x):
@@ -88,7 +91,8 @@ class Vgg16():
             Returns:   None
         """
         self.model = VGG16(weights='imagenet', include_top=True)
-    # gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess)
+
+
     def get_batches(self, path, gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess),
                     shuffle=True, batch_size=8, class_mode='categorical'):
         """
