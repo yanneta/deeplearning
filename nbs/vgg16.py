@@ -124,6 +124,7 @@ class Vgg16():
             layer.trainable = False
         self.compile()
 
+
     def finetune(self, batches):
         """
             Modifies the original VGG16 network architecture and updates self.classes for new training data.
