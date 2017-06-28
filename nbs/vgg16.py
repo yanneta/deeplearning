@@ -115,11 +115,9 @@ class Vgg16():
             Returns:
                 None
         """
-        model = self.model
-        model.layers.pop()
-        output = model.layers[-1].output
+        output = self.model.layers[-2].output
         pred = Dense(num, activation='softmax')(output)
-        self.model = Model(inputs = model.input, outputs = pred)
+        self.model = Model(inputs = self.model.input, outputs = pred)
         for layer in self.model.layers[:22]:
             layer.trainable = False
         self.compile()
