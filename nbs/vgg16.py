@@ -96,12 +96,18 @@ class Vgg16():
     def get_batches(self, path, gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess),
                     shuffle=True, batch_size=8, class_mode='categorical'):
         """
-            Takes the path to a directory, and generates batches of augmented/normalized data. Yields batches indefinitely, in an infinite loop.
+            Takes the path to a directory, and generates batches of augmented/normalized data.
+            Yields batches indefinitely, in an infinite loop.
 
             See Keras documentation: https://keras.io/preprocessing/image/
         """
         return gen.flow_from_directory(path, target_size=(224,224),
                 class_mode=class_mode, shuffle=shuffle, batch_size=batch_size)
+
+
+    def get_data(self, path):
+        batches = self.get_batches(path, shuffle=False, batch_size=1, class_mode=None)
+        return np.concatenate([batches.next() for i in range(batches.samples)])
 
 
     def ft(self, num):
