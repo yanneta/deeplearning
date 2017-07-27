@@ -25,11 +25,6 @@ from sklearn.manifold import TSNE
 
 from IPython.lib.display import FileLink
 
-#import theano
-#from theano import shared, tensor as T
-#from theano.tensor.nnet import conv2d, nnet
-#from theano.tensor.signal import pool
-
 import keras
 from keras import backend as K
 from keras.utils.data_utils import get_file
@@ -235,6 +230,12 @@ def split_at(model, layer_type):
     layer_idx = [index for index,layer in enumerate(layers)
                  if type(layer) is layer_type][-1]
     return layers[:layer_idx+1], layers[layer_idx+1:]
+
+def limit_mem():
+    K.get_session().close()
+    cfg = K.tf.ConfigProto()
+    cfg.gpu_options.allow_growth = True
+    K.set_session(K.tf.Session(config=cfg))
 
 
 class MixIterator(object):
