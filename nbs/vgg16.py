@@ -1,19 +1,17 @@
 from __future__ import division, print_function
 
-import os, json
+import os, json, numpy as np
 from glob import glob
-import numpy as np
-from scipy import misc, ndimage
-from scipy.ndimage.interpolation import zoom
+#from scipy import misc, ndimage
+#from scipy.ndimage.interpolation import zoom
 
 from keras import backend as K
-from keras.layers.normalization import BatchNormalization
+from keras.layers import BatchNormalization
 from keras.utils.data_utils import get_file
-from keras.models import Sequential
 from keras.models import Model
-from keras.layers.core import Flatten, Dense, Dropout, Lambda
-from keras.layers.convolutional import Convolution2D, MaxPooling2D, ZeroPadding2D
-from keras.layers.pooling import GlobalAveragePooling2D
+from keras.layers import Flatten, Dense, Dropout, Lambda, Input
+#from keras.layers import Convolution2D, MaxPooling2D, ZeroPadding2D
+#from keras.layers import GlobalAveragePooling2D
 from keras.optimizers import SGD, RMSprop, Adam
 from keras.preprocessing import image
 from keras.applications.vgg16 import VGG16
@@ -42,9 +40,10 @@ class Vgg16():
     """
 
 
-    def __init__(self):
+    def __init__(self, model=None):
         self.FILE_PATH = 'http://files.fast.ai/models/'
-        self.create()
+        if model: self.model=model
+        else: self.create()
         self.get_classes()
 
 
@@ -94,7 +93,7 @@ class Vgg16():
 
 
     def get_batches(self, path, gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess),
-                    shuffle=True, batch_size=8, class_mode='categorical'):
+                    shuffle=True, batch_size=32, class_mode='categorical'):
         """
             Takes the path to a directory, and generates batches of augmented/normalized data.
             Yields batches indefinitely, in an infinite loop.
@@ -124,8 +123,19 @@ class Vgg16():
         output = self.model.layers[-2].output
         pred = Dense(num, activation='softmax')(output)
         self.model = Model(inputs = self.model.input, outputs = pred)
-        for layer in self.model.layers[:22]:
+        for layer in self.model.layers[:-1]:
             layer.trainable = False
+        self.compile()
+
+
+    def unfreeze(self):
+        """
+            Unfreeze all layers
+            
+            Returns:
+                None
+        """
+        for layer in self.model.layers: layer.trainable = True
         self.compile()
 
 
@@ -167,14 +177,15 @@ class Vgg16():
                 validation_data=(val, val_labels), batch_size=batch_size)
 
 
-    def fit(self, batches, val_batches, epochs=1):
+    def fit(self, batches, val_batches, epochs=1, workers=2):
         """
             Fits the model on data yielded batch-by-batch by a Python generator.
             See Keras documentation: https://keras.io/models/model/
         """
         self.model.fit_generator(batches, steps_per_epoch=batches.samples/batches.batch_size,
-                                 epochs=epochs, validation_data=val_batches,
-                                 validation_steps=val_batches.samples/val_batches.batch_size)
+            epochs=epochs, validation_data=val_batches,
+            validation_steps=val_batches.samples/val_batches.batch_size,
+            workers=workers)
 
 
     def test(self, path, batch_size=8):
@@ -193,3 +204,24 @@ class Vgg16():
         test_batches = self.get_batches(path, shuffle=False, batch_size=batch_size, class_mode=None)
         return test_batches, self.model.predict_generator(test_batches, test_batches.samples)
 
+
+def insert_do_bn(x, p=0, bn=False):
+    if bn: x = BatchNormalization()(x)
+    if p: x = Dropout(p)(x)
+    return x
+
+def create_vgg(ps=None, bn=False):
+    if not ps: ps=[0,0,0]
+    elif not isinstance(ps, list): ps = [ps,ps,ps]
+    assert(len(ps)==3)
+
+    m = VGG16(include_top=True)
+    dense_layers = ['fc1', 'fc2', 'predictions']
+    inp = Input(batch_shape=m.input_shape)
+    x = inp
+    for l in m.layers:
+        if isinstance(l, Dense):
+            x = insert_do_bn(x, ps[dense_layers.index(l.name)], bn)
+        if not isinstance(x, type(Input)): x = l(x)
+
+    return Vgg16(Model(inp, x))
