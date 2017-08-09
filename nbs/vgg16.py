@@ -1,62 +1,228 @@
-from __future__ import division, print_function
-
-import os, json, numpy as np
+import os, json, numpy as np, math, bcolz
 from glob import glob
-#from scipy import misc, ndimage
-#from scipy.ndimage.interpolation import zoom
 
 from keras import backend as K
 from keras.layers import BatchNormalization
 from keras.utils.data_utils import get_file
 from keras.models import Model
 from keras.layers import Flatten, Dense, Dropout, Lambda, Input
-#from keras.layers import Convolution2D, MaxPooling2D, ZeroPadding2D
-#from keras.layers import GlobalAveragePooling2D
 from keras.optimizers import SGD, RMSprop, Adam
 from keras.preprocessing import image
 from keras.applications.vgg16 import VGG16
 
+from keras.utils.generic_utils import Progbar
+from keras.utils.data_utils import GeneratorEnqueuer
 
-# This next function is similar to 
-# from keras.applications.imagenet_utils import preprocess_input
+def predict_to_bcolz(m, generator, preds, labels, workers=2, verbose=0):
+    m._make_predict_function()
+    steps=math.ceil(generator.n/generator.batch_size)
+    
+    try:
+        enqueuer = GeneratorEnqueuer(generator, wait_time=0.01)
+        enqueuer.start(workers=workers, max_queue_size=10)
+        batches = enqueuer.get()
+        if verbose == 1: progbar = Progbar(target=steps)
 
-vgg_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((1,1,3))
-def vgg_preprocess(x):
-    """
-        Subtracts the mean RGB value, and transposes RGB to BGR.
-        The mean RGB was computed on the image set used to train the VGG model.
-        Args: 
-            x: Image array (height x width x channels)
-        Returns:
-            Image array (height x width x transposed_channels)
-    """
-    x = x[:, :, ::-1] # reverse axis rgb->bgr
-    x = x - vgg_mean
-    return x
+        for i in range(steps):
+            batch = next(batches)
+            x = batch[0]; y = batch[1]
+            preds.append(m.predict_on_batch(x))
+            labels.append(y)
+            if verbose == 1: progbar.update(i)
+        preds.flush()
+        labels.flush()
+
+    finally: enqueuer.stop()
+
+def freeze_to(m, idx):
+    print(f'-- freeze {idx}')
+    if isinstance(idx, str): idx=m.layers.index(m.get_layer(idx))
+    for layer in m.layers[idx:]: layer.trainable = True
+    for layer in m.layers[:idx]: layer.trainable = False
+    reset_trainable(m)
+
+def unfreeze(m): freeze_to(m, 0)
+
+def reset_trainable(m): 
+    m._collected_trainable_weights = m.trainable_weights
+    m.train_function = None
+    
+def set_trainable(m, name, t): 
+    m.get_layer(name).trainable = t
+    reset_trainable(m)
+
+def set_lr(m, lr): 
+    K.set_value(m.optimizer.lr, lr)
+    print(f'-- lr {lr}')
 
 class Vgg16():
     """
         The VGG 16 Imagenet model
     """
+    vgg_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((1,1,3))
+    dense_layers = ['fc1', 'fc2', 'predictions']
+    pre_bn_layers = ['flatten', 'fc1', 'fc2']
 
-
-    def __init__(self, model=None):
+    def __init__(self, path=None, bs=48, vert_flip=False, ps=None, bn_layers=None,
+            trn_name='train', val_name='valid', tmp_name='tmp', models_name='models',
+            gen=image.ImageDataGenerator(horizontal_flip=True, rotation_range=5, 
+                height_shift_range=0.05, width_shift_range=0.05,
+                channel_shift_range=0.05)):
         self.FILE_PATH = 'http://files.fast.ai/models/'
-        if model: self.model=model
-        else: self.create()
+        self.path,self.bs,self.ps,self.bn_layers = path,bs,ps,bn_layers
+        self.bs=bs
+        if path: 
+            if not gen.preprocessing_function:
+                gen.preprocessing_function=self.preprocess
+            if vert_flip: gen.vertical_flip=True
+            self.gen=gen
+            self.setup_path(trn_name, val_name, tmp_name, models_name)
+        else:
+            self.model = VGG16()
         self.get_classes()
+        
+    def setup_path(self, trn_name, val_name, tmp_name, models_name):
+        self.trn_path = os.path.join(self.path, trn_name)
+        self.val_path = os.path.join(self.path, val_name)
+        self.tmp_path = os.path.join(self.path, tmp_name)
+        if not os.path.exists(self.tmp_path): os.mkdir(self.tmp_path)
+        self.models_path = os.path.join(self.path, models_name)
+        if not os.path.exists(self.models_path): os.mkdir(self.models_path)
+        self.val_gen=image.ImageDataGenerator(preprocessing_function=self.preprocess)
+        self.batches = self.get_batches()
+        self.val_batches = self.get_batches(shuffle=False, is_trn=False)
+        self.nb = math.ceil(self.batches.n/self.batches.batch_size)
+        self.val_nb = math.ceil(self.val_batches.n/self.val_batches.batch_size)
+        self.nc=self.batches.num_class
+        self.create()
 
+    def create_empty_bcolz(self, n, name):
+        return bcolz.carray(np.zeros((0,n), np.float32), 
+                            chunklen=1, mode='w', rootdir=name)
+
+    def get_fc1_arrays(self, force=False):
+        names = [os.path.join(self.tmp_path, p+'.bc') for p in (
+                'arr', 'y_arr', 'arr_val', 'y_arr_val')]
+        if os.path.exists(names[0]) and not force: 
+            arrs = [bcolz.open(p) for p in names]
+        else:
+            sizes = (4096, self.nc, 4096, self.nc) # 25088
+            arrs = [self.create_empty_bcolz(s,p) for s,p in zip(sizes, names)]
+        (self.arr, self.y_arr, self.arr_val, self.y_arr_val) = arrs
+        
+    def save_fc1(self):
+        self.get_fc_model()
+        self.get_fc1_arrays()
+        if len(self.arr): return
+        trn_batches = self.get_batches(shuffle=False, is_trn=True)
+        predict_to_bcolz(self.conv_model, trn_batches, self.arr, self.y_arr, verbose=1)
+        predict_to_bcolz(self.conv_model, 
+                         self.val_batches, self.arr_val, self.y_arr_val, verbose=1)
 
     def get_classes(self):
         """
             Downloads the Imagenet classes index file and loads it to self.classes.
             The file is downloaded only if it not already in the cache.
         """
-        fname = 'imagenet_class_index.json'
-        fpath = get_file(fname, self.FILE_PATH+fname, cache_subdir='models')
-        with open(fpath) as f:
-            class_dict = json.load(f)
-        self.classes = [class_dict[str(i)][1] for i in range(len(class_dict))]
+        if self.batches:
+            self.class_idx = self.batches.class_indices
+            self.classes = [0]*self.nc
+            for label,idx in self.class_idx.items(): self.classes[idx]=label
+        else:
+            fname = 'imagenet_class_index.json'
+            fpath = get_file(fname, self.FILE_PATH+fname, cache_subdir='models')
+            with open(fpath) as f: self.class_idx = json.load(f)
+            self.nc = len(self.class_idx)
+            self.classes = [self.class_idx[str(i)][1] for i in range(self.nc)]
+
+    def preprocess(self, x):
+        """
+            Subtracts the mean RGB value, and transposes RGB to BGR.
+            The mean RGB was computed on the image set used to train the VGG model.
+            (Similar to .applications.imagenet_utils.preprocess_input)
+
+            Args: 
+                x: Image array (height x width x channels)
+            Returns:
+                Image array (height x width x transposed_channels)
+        """
+        return x[:, :, ::-1] - self.vgg_mean   # reverse axis rgb->bgr
+
+    
+    def get_path(self, is_trn): 
+        return self.trn_path if is_trn else self.val_path
+    
+    def get_batches(self, shuffle=True, is_trn=True, class_mode='categorical'):
+        """
+            Generates batches of augmented/normalized data.
+            Yields batches indefinitely, in an infinite loop.
+
+            See Keras documentation: https://keras.io/preprocessing/image/
+        """
+        gen = self.gen if shuffle else self.val_gen
+        return gen.flow_from_directory(self.get_path(is_trn), target_size=(224,224),
+                class_mode=class_mode, shuffle=shuffle, batch_size=self.bs)
+
+    def get_bn_params(self):
+        m=self.model
+        batches = self.get_batches()
+        x,y = next(batches)
+        ms=[Model(m.input, m.get_layer(o).output) for o in self.pre_bn_layers]
+        bn_inp = [m.predict_on_batch(x) for m in ms]
+        means = [o.mean(0) for o in bn_inp]
+        stds = [o.var(0) for o in bn_inp]
+        bn_params = [(np.sqrt(s),m,m,s) for m,s in zip(means,stds)]
+        for idx,keep in enumerate(self.bn_layers):
+            if not keep: bn_params[idx]=0
+        return bn_params
+
+    def create_fc(self, x, nf, actn, name, p, bn, set_weights=True):
+        if bn:
+            bnl = BatchNormalization(name=name+'_bn')
+            x = bnl(x)
+            bnl.set_weights(bn)
+        if p: x = Dropout(p, name=name+'_do')(x)
+        fc = Dense(nf, activation=actn, name=name)
+        x = fc(x)
+        if set_weights: 
+            fc.set_weights(self.model.get_layer(name).get_weights())
+        return x
+    
+    def get_fc_model(self):
+        m=self.model
+        fc_start = m.get_layer('fc1')
+        fc_start_idx = m.layers.index(fc_start)
+        self.conv_model = Model(m.input, fc_start.output)
+        fc_inp = Input(batch_shape=self.conv_model.output_shape)
+        x=fc_inp
+        fc_layers = m.layers[fc_start_idx+1:]
+        for l in fc_layers: x=l(x)
+        self.fc_model = Model(fc_inp, x)
+    
+    def create(self):
+        self.model = VGG16()
+        m=self.model
+        if not self.ps: self.ps=[0]*3
+        elif not isinstance(self.ps, list): self.ps = [0,0,self.ps]
+        assert(len(self.ps)==3)
+
+        if self.bn_layers: bn=self.get_bn_params()
+        else: bn=[0]*3
+        fl = m.get_layer('flatten')
+        x = fl.output
+
+        x = self.create_fc(x, 4096, 'relu', name='fc1', p=self.ps[0], bn=bn[0])
+        x = self.create_fc(x, 4096, 'relu', 'fc2', self.ps[1], bn[1])
+        x = self.create_fc(x, self.nc, 'softmax', 'predictions', 
+                           self.ps[2], bn[2], set_weights=False)
+
+        m.get_layer('fc1').input_nodes=None
+
+        self.model = Model(m.input, x)
+        self.save_fc1()
+        freeze_to(self.model, -1)
+        self.compile()
+
 
     def predict(self, imgs, details=False):
         """
@@ -81,147 +247,43 @@ class Vgg16():
         classes = [self.classes[idx] for idx in idxs]
         return np.array(preds), idxs, classes
 
-
-    def create(self, include_top=True):
-        """
-            Creates the VGG16 network achitecture and loads the pretrained weights.
-
-            Args:   None
-            Returns:   None
-        """
-        self.model = VGG16(weights='imagenet', include_top=True)
-
-
-    def get_batches(self, path, gen=image.ImageDataGenerator(preprocessing_function=vgg_preprocess),
-                    shuffle=True, batch_size=32, class_mode='categorical'):
-        """
-            Takes the path to a directory, and generates batches of augmented/normalized data.
-            Yields batches indefinitely, in an infinite loop.
-
-            See Keras documentation: https://keras.io/preprocessing/image/
-        """
-        return gen.flow_from_directory(path, target_size=(224,224),
-                class_mode=class_mode, shuffle=shuffle, batch_size=batch_size)
-
-
-    def get_data(self, path):
-        batches = self.get_batches(path, shuffle=False, batch_size=1, class_mode=None)
-        return np.concatenate([batches.next() for i in range(batches.samples)])
-
-
-    def ft(self, num):
-        """
-            Replace the last layer of the model with a Dense (fully connected) layer of num neurons.
-            Will also lock the weights of all layers except the new layer so that we only learn
-            weights for the last layer in subsequent training.
-
-            Args:
-                num (int) : Number of neurons in the Dense layer
-            Returns:
-                None
-        """
-        output = self.model.layers[-2].output
-        pred = Dense(num, activation='softmax')(output)
-        self.model = Model(inputs = self.model.input, outputs = pred)
-        for layer in self.model.layers[:-1]:
-            layer.trainable = False
-        self.compile()
-
-
-    def unfreeze(self):
-        """
-            Unfreeze all layers
-            
-            Returns:
-                None
-        """
-        for layer in self.model.layers: layer.trainable = True
-        self.compile()
-
-
-    def finetune(self, batches):
-        """
-            Modifies the original VGG16 network architecture and updates self.classes for new training data.
-            
-            Args:
-                batches : A keras.preprocessing.image.ImageDataGenerator object.
-                          See definition for get_batches().
-        """
-        self.ft(batches.num_class)
-        classes = list(iter(batches.class_indices)) # get a list of all the class labels
-        
-        # batches.class_indices is a dict with the class name as key and an index as value
-        # eg. {'cats': 0, 'dogs': 1}
-
-        # sort the class labels by index according to batches.class_indices and update model.classes
-        for c in batches.class_indices:
-            classes[batches.class_indices[c]] = c
-        self.classes = classes
-
-
-    def compile(self, lr=0.001):
+    def compile(self, lr=0.001, opt=None):
         """
             Configures the model for training.
-            See Keras documentation: https://keras.io/models/model/
         """
-        self.model.compile(optimizer=Adam(lr=lr),
-                loss='categorical_crossentropy', metrics=['accuracy'])
+        if opt is None: opt=SGD(lr=lr, momentum=0.9)
+        self.model.compile(opt, 'categorical_crossentropy', ['accuracy'])
+        self.fc_model.compile(opt, 'categorical_crossentropy', ['accuracy'])
 
 
-    def fit_data(self, trn, labels,  val, val_labels,  epochs=1, batch_size=64):
-        """
-            Trains the model for a fixed number of epochs (iterations on a dataset).
-            See Keras documentation: https://keras.io/models/model/
-        """
-        self.model.fit(trn, labels, epochs=epochs,
-                validation_data=(val, val_labels), batch_size=batch_size)
-
-
-    def fit(self, batches, val_batches, epochs=1, workers=2):
+    def fit(self, epochs=1, workers=2, callbacks=None):
         """
             Fits the model on data yielded batch-by-batch by a Python generator.
-            See Keras documentation: https://keras.io/models/model/
         """
-        self.model.fit_generator(batches, steps_per_epoch=batches.samples/batches.batch_size,
-            epochs=epochs, validation_data=val_batches,
-            validation_steps=val_batches.samples/val_batches.batch_size,
-            workers=workers)
+        nb = self.nb
+        if epochs<1: nb*=epochs; epochs=1
+        self.model.fit_generator(self.batches, steps_per_epoch=nb,
+            epochs=epochs, validation_data=self.val_batches, validation_steps=self.val_nb,
+            workers=workers, callbacks=callbacks)
+        
+    def fit_fc(self, epochs=1, callbacks=None):
+        nb = self.nb
+        if epochs<1: nb*=epochs; epochs=1
+        self.fc_model.fit(self.arr, self.y_arr, epochs=epochs, 
+            validation_data=(self.arr_val, self.y_arr_val), callbacks=callbacks)
+        
+    def clear_session(self):
+        lr=K.get_value(self.model.optimizer.lr)
+        self.save('tmp')
+        self.model=None
+        self.fc_model=None
+        K.clear_session()
+        limit_mem()
+        self.create()
+        self.load('tmp')
+        K.set_value(self.model.optimizer.lr, lr)
 
-
-    def test(self, path, batch_size=8):
-        """
-            Predicts the classes using the trained model on data yielded batch-by-batch.
-
-            Args:
-                path (string):  Path to the target directory. It should contain one subdirectory 
-                                per class.
-                batch_size (int): The number of images to be considered in each batch.
-            
-            Returns:
-                test_batches, numpy array(s) of predictions for the test_batches.
-    
-        """
-        test_batches = self.get_batches(path, shuffle=False, batch_size=batch_size, class_mode=None)
-        return test_batches, self.model.predict_generator(test_batches, test_batches.samples)
-
-
-def insert_do_bn(x, p=0, bn=False):
-    if bn: x = BatchNormalization()(x)
-    if p: x = Dropout(p)(x)
-    return x
-
-def create_vgg(ps=None, bn=False):
-    if not ps: ps=[0,0,0]
-    elif not isinstance(ps, list): ps = [ps,ps,ps]
-    assert(len(ps)==3)
-
-    m = VGG16(include_top=True)
-    dense_layers = ['fc1', 'fc2', 'predictions']
-    inp = Input(batch_shape=m.input_shape)
-    x = inp
-    for l in m.layers:
-        if isinstance(l, Dense):
-            x = insert_do_bn(x, ps[dense_layers.index(l.name)], bn)
-        if not isinstance(x, type(Input)): x = l(x)
-
-    return Vgg16(Model(inp, x))
+    def set_lr(self, lr): set_lr(self.model, lr)
+    def get_model_path(self, name): return os.path.join(self.models_path,name)+'.h5'
+    def save(self, name): self.model.save_weights(self.get_model_path(name))
+    def load(self, name): self.model.load_weights(self.get_model_path(name))

@@ -1,8 +1,6 @@
-from __future__ import division,print_function
-import math, os, json, sys, re
-import pickle
+import math, os, json, sys, re, numpy as np, pickle, PIL, scipy
+from PIL import Image
 from glob import glob
-import numpy as np
 from matplotlib import pyplot as plt
 from operator import itemgetter, attrgetter, methodcaller
 from collections import OrderedDict
@@ -10,18 +8,15 @@ import itertools
 from itertools import chain
 
 import pandas as pd
-import PIL
-from PIL import Image
 from numpy.random import random, permutation, randn, normal, uniform, choice
 from numpy import newaxis
-import scipy
 from scipy import misc, ndimage
 from scipy.ndimage.interpolation import zoom
 from scipy.ndimage import imread
 from sklearn.metrics import confusion_matrix
-import bcolz
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.manifold import TSNE
+import bcolz
 
 from IPython.lib.display import FileLink
 
@@ -42,46 +37,29 @@ from keras.metrics import categorical_crossentropy, categorical_accuracy
 from keras.layers.convolutional import *
 from keras.preprocessing import image, sequence
 from keras.preprocessing.text import Tokenizer
-
-from vgg16 import *
-#from vgg16bn import *
+from vgg16 import Vgg16
 np.set_printoptions(precision=4, linewidth=100)
 
 
 to_bw = np.array([0.299, 0.587, 0.114])
 
-def gray(img):
-    if K.image_dim_ordering() == 'tf':
-        return np.rollaxis(img, 0, 1).dot(to_bw)
-    else:
-        return np.rollaxis(img, 0, 3).dot(to_bw)
+def gray(img): return np.rollaxis(img, 0, 1).dot(to_bw)
+def to_plot(img): return np.rollaxis(img, 0, 1).astype(np.uint8)
+def plot(img): plt.imshow(to_plot(img))
 
-def to_plot(img):
-    if K.image_dim_ordering() == 'tf':
-        return np.rollaxis(img, 0, 1).astype(np.uint8)
-    else:
-        return np.rollaxis(img, 0, 3).astype(np.uint8)
-
-def plot(img):
-    plt.imshow(to_plot(img))
-
-
-def floor(x):
-    return int(math.floor(x))
-def ceil(x):
-    return int(math.ceil(x))
+def floor(x): return int(math.floor(x))
+def ceil(x): return int(math.ceil(x))
 
 def plots(ims, figsize=(12,6), rows=1, interp=False, titles=None):
     if type(ims[0]) is np.ndarray:
         ims = np.array(ims).astype(np.uint8)
-        if (ims.shape[-1] != 3):
-            ims = ims.transpose((0,2,3,1))
+        if (ims.shape[-1] != 3): ims = ims.transpose((0,2,3,1))
     f = plt.figure(figsize=figsize)
+    
     for i in range(len(ims)):
         sp = f.add_subplot(rows, len(ims)//rows, i+1)
         sp.axis('Off')
-        if titles is not None:
-            sp.set_title(titles[i], fontsize=16)
+        if titles is not None: sp.set_title(titles[i], fontsize=16)
         plt.imshow(ims[i], interpolation=None if interp else 'none')
 
 
@@ -90,36 +68,21 @@ def do_clip(arr, mx):
     return clipped/clipped.sum(axis=1)[:, np.newaxis]
 
 
-def get_batches(dirname, gen=image.ImageDataGenerator(), shuffle=True,
-        batch_size=4, class_mode='categorical', target_size=(224,224)):
-    return gen.flow_from_directory(dirname, target_size=target_size,
-            class_mode=class_mode, shuffle=shuffle, batch_size=batch_size)
-
-
-def onehot(x):
-    return to_categorical(x)
-
-
 def wrap_config(layer):
     return {'class_name': layer.__class__.__name__, 'config': layer.get_config()}
 
-
 def copy_layer(layer): return layer_from_config(wrap_config(layer))
 
-
 def copy_layers(layers): return [copy_layer(layer) for layer in layers]
-
 
 def copy_weights(from_layers, to_layers):
     for from_layer,to_layer in zip(from_layers, to_layers):
         to_layer.set_weights(from_layer.get_weights())
 
-
 def copy_model(m):
     res = Sequential(copy_layers(m.layers))
     copy_weights(m.layers, res.layers)
     return res
-
 
 def insert_layer(model, new_layer, index):
     res = Sequential()
@@ -131,19 +94,8 @@ def insert_layer(model, new_layer, index):
     return res
 
 
-def adjust_dropout(weights, prev_p, new_p):
-    scal = (1-prev_p)/(1-new_p)
-    return [o*scal for o in weights]
-
-
-def get_data(path, target_size=(224,224)):
-    batches = get_batches(path, shuffle=False, batch_size=1, class_mode=None,
-			  target_size=target_size)
-    return np.concatenate([batches.next() for i in range(batches.samples)])
-
-
 def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix',
-			  cmap=plt.cm.Blues):
+        cmap=plt.cm.Blues):
     """
     This function prints and plots the confusion matrix.
     Normalization can be applied by setting `normalize=True`.
