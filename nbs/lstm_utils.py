@@ -36,12 +36,15 @@ from keras.preprocessing import image, sequence
 from keras.preprocessing.text import Tokenizer
 
 
-def get_LSTM_model(units=100, embeding_size=50, emb = None):
+def get_LSTM_model(units=100, embeding_size=50, emb_reg=1e-5, dropout=0.2,
+                   seq_len=500, vocab_size=5000):
     
+    # weights=[emb]
     inputs = Input(shape=(seq_len,), dtype='int32')
     x = Embedding(vocab_size, embeding_size, input_length=seq_len,
-                  mask_zero=True, weights=[emb], W_regularizer=l2(1e-6))(inputs)
-    x = Dropout(0.2)(x)
+                  mask_zero=True,
+                  embeddings_regularizer=regularizers.l2(emb_reg))(inputs)
+    x = Dropout(dropout)(x)
     x = LSTM(units, implementation=2, dropout=0.2)(x)
     x = Dense(1, activation='sigmoid')(x)
     model = Model(inputs=inputs, outputs=x)
@@ -88,7 +91,7 @@ def create_emb(vocab_size, glove_path, idx2word):
 
     for i in range(1,len(emb)):
         word = idx2word[i]
-        if word and re.match(r"^[a-zA-Z0-9\-]*$", word):
+        if word and re.match(r"^[a-zA-Z0-9\-]*$", word) and word in wordidx:
             src_idx = wordidx[word]
             emb[i] = vecs[src_idx]
         else:
