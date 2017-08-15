@@ -45,7 +45,7 @@ def get_LSTM_model(units=100, embeding_size=50, emb_reg=1e-5, dropout=0.2,
                   mask_zero=True,
                   embeddings_regularizer=regularizers.l2(emb_reg))(inputs)
     x = Dropout(dropout)(x)
-    x = LSTM(units, implementation=2, dropout=0.2)(x)
+    x = LSTM(units, implementation=2, dropout=dropout)(x)
     x = Dense(1, activation='sigmoid')(x)
     model = Model(inputs=inputs, outputs=x)
     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
