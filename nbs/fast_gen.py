@@ -1,87 +1,163 @@
-import PIL, os, numpy as np, math, matplotlib.pyplot as plt, collections
-from keras import utils
-from keras.preprocessing import image
-from abc import abstractmethod
-from glob import glob
+from imports import *
+import torch
 
-def read_dirs(path, folder):
-    full_path = os.path.join(path, folder)
-    all_labels = [os.path.basename(os.path.dirname(f)) 
-                  for f in glob(f"{full_path}/*/")]
-    fnames = [glob(f"{full_path}/{d}/*.*") for d in all_labels]
-    pairs = [(fn,l) for l,f in zip(all_labels, fnames) for fn in f]
-    return list(zip(*pairs))+[all_labels]
+conv_dict = {np.dtype('int32'): torch.IntTensor, np.dtype('int64'): torch.LongTensor,
+    np.dtype('float32'): torch.FloatTensor, np.dtype('float64'): torch.DoubleTensor}
+def T(a): return conv_dict[a.dtype](a)
 
-def n_hot(ids, c):
-    res = np.zeros((c,))
-    res[ids] = 1
-    return res
+imagenet_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((1,1,3))
+def preprocess_imagenet(x): return x[..., ::-1] - imagenet_mean
+def preprocess_scale(x): return ((x/255.)-0.5)*2
 
-def folder_source(path, folder):
-    fnames, lbls, all_labels = read_dirs(path, 'train')
-    label2idx = {v:k for k,v in enumerate(all_labels)}
-    idxs = [label2idx[lbl] for lbl in lbls]
-    c = len(all_labels)
-    label_arr = np.stack(n_hot(o, c) for o in idxs)
-    return fnames, label_arr, all_labels
-
-def apply_gen(im, targ_r, scale_fn, fns):
-    for fn in fns: im=fn(im)
-    return scale_fn(im, targ_r)
-
-def base_gen(targ_r, scale_fn, fns=[]): 
-    if not isinstance(fns, collections.Iterable): fns=[fns]
-    return lambda im: apply_gen(im, targ_r, scale_fn, fns)
-
-def pass_gen(): return lambda o: o
-
-class BaseIter(image.Iterator):
-    def __init__(self, gen_x, gen_y, bs=64, shuffle=False, seed=None):
-        self.gen_x,self.gen_y,self.bs,self.shuffle = gen_x,gen_y,bs,shuffle
-        self.samples = self.get_n()
-        self.n_batch = math.ceil(self.samples/bs)
-        super().__init__(self.samples, bs, shuffle, seed)
-        
-    @abstractmethod
-    def get_n(self): raise NotImplementedError
-        
-    @abstractmethod
-    def get_x(self, i): raise NntImplementedError
-        
-    @abstractmethod
-    def get_y(self, i): raise NotImplementedError
-        
-    def get(self, gen, fn, idxs): return np.stack([gen(fn(i)) for i in idxs])
-    
-    def next(self):
-        with self.lock: idxs, curr_idx, bs = next(self.index_generator)
-        return (self.get(self.gen_x, self.get_x, idxs), 
-                self.get(self.gen_y, self.get_y, idxs))
-    
-
-class FilesIter(BaseIter):
-    def __init__(self, fnames, y, gen, bs=64, shuffle=False, seed=None):
-        self.fnames,self.y=fnames,y
-        assert(len(fnames)==len(y))
-        super().__init__(gen, pass_gen(), bs, shuffle, seed)
-        
-    def get_x(self, i): return PIL.Image.open(self.fnames[i])
-    def get_y(self, i): return self.y[i]
-    def get_n(self): return len(self.y)
-
-def center_crop(im):
+def center_crop(im, min_sz=None):
     r,c,_ = im.shape
-    min_s = min(r,c)
-    start_r = math.ceil((r-min_s)/2)
-    start_c = math.ceil((c-min_s)/2)
-    return im[start_r:start_r+min_s, start_c:start_c+min_s]
+    if min_sz is None: min_sz = min(r,c)
+    start_r = math.ceil((r-min_sz)/2)
+    start_c = math.ceil((c-min_sz)/2)
+    assert(start_r+min_sz<=r)
+    assert(start_c+min_sz<=c)
+    return im[start_r:start_r+min_sz, start_c:start_c+min_sz]
 
 def scale_to(x, ratio, targ): return max(math.floor(x*ratio), targ)
     
 def scale_min(im, targ_r):
-    r,c = im.size
+    r,c,_ = im.shape
     ratio = targ_r/min(r,c)
-    sz = (scale_to(r, ratio, targ_r), scale_to(c, ratio, targ_r))
-    return np.array(im.resize(sz, PIL.Image.BILINEAR))
+    sz = (scale_to(c, ratio, targ_r), scale_to(r, ratio, targ_r))
+    return cv2.resize(im, sz)
 
 def scale_and_center(im, targ_r): return center_crop(scale_min(im, targ_r))
+
+def zoom_cv(x,z):
+    if z==0: return x
+    rows=x.shape[0]; cols=x.shape[1]
+    M = cv2.getRotationMatrix2D((cols/2,rows/2),0,z+1.)
+    return cv2.warpAffine(x,M,(cols,rows))
+
+def stretch_cv(x,sr,sc):
+    if sr==0 and sc==0: return x
+    r=x.shape[0]; c=x.shape[1]
+    x = cv2.resize(x, None, fx=sr+1, fy=sc+1)
+    nr=x.shape[0]; nc=x.shape[1]
+    cr = (nr-r)//2; cc = (nc-c)//2
+    return x[cr:r+cr, cc:c+cc]
+
+def dihedral(x, dih):
+    x = np.rot90(x, self.dih%4)
+    return x if self.dih<4 else np.fliplr(x)
+
+def lighting(im, b, c):
+    if b==0 and c==1: return im
+    mu = np.average(im)
+    return np.clip((im-mu)*c+mu+b,0.,1.).astype(np.float32)
+
+def rotate_cv(img, deg, mode=cv2.BORDER_REFLECT):
+    rows=img.shape[0]; cols=img.shape[1]
+    M = cv2.getRotationMatrix2D((cols/2,rows/2),deg,1)
+    return cv2.warpAffine(img,M,(cols,rows), borderMode=mode)
+
+def det_dihedral(dih): return lambda x: dihedral(dih)
+def det_stretch(sr, sc): return lambda x: stretch_cv(x, sr, sc)
+def det_lighting(b, c): return lambda x: lighting(x, b, c)
+def det_rotate(deg): return lambda x: rotate_cv(x, deg)
+def det_zoom(zoom): return lambda x: zoom_cv(x, zoom)
+
+def ScaleCenter(sz): return lambda x: scale_and_center(x, sz)
+
+def rand0(s): return random.random()*(s*2)-s
+
+class RandomScaleCenter(): 
+    def __init__(self, targ_r, max_zoom): 
+        self.targ_r,self.max_zoom = targ_r,max_zoom
+    def __call__(self, x): 
+        sz = int(random.uniform(1., self.max_zoom)*self.targ_r)
+        im = scale_min(x, sz)
+        r,c,_ = im.shape
+        start_r = random.randint(0, r-self.targ_r)
+        start_c = random.randint(0, c-self.targ_r)
+        assert(start_r+self.targ_r<=r)
+        assert(start_c+self.targ_r<=c)
+        return im[start_r:start_r+self.targ_r, start_c:start_c+self.targ_r]
+
+class Normalize():
+    def __init__(self, m, s):
+        self.m=np.array(m, dtype=np.float32)
+        self.s=np.array(s, dtype=np.float32)
+    def __call__(self, x): return (x-self.m)/self.s
+
+class RandomRotateZoom():
+    def __init__(self, deg, zoom, stretch, mode=cv2.BORDER_REFLECT):
+        self.deg,self.zoom,self.stretch,self.mode = deg,zoom,stretch,mode
+
+    def __call__(self, x, y=None):
+        choice = random.randint(0,3)
+        if choice==0: pass
+        elif choice==1: x = rotate_cv(x, rand0(self.deg), self.mode)
+        elif choice==2: x = zoom_cv(x, random.random()*self.zoom)
+        elif choice==3:
+            str_choice = random.randint(0,1)
+            sa = random.random()*self.stretch
+            if str_choice==0: x = stretch_cv(x, sa, 0)
+            else:             x = stretch_cv(x, 0, sa)
+        assert (y is None) # not implemented
+        return x
+
+class RandomRotate():
+    def __init__(self, deg, p=0.75, mode=cv2.BORDER_REFLECT):
+        self.deg,self.p,self.mode = deg,p,mode
+
+    def __call__(self, x, y=None):
+        choice = random.random()
+        deg = rand0(self.deg)
+        if choice>self.p: pass
+        else:
+            x = rotate_cv(x, deg, self.mode)
+        if y is not None: return x, rotate_cv(y, deg, self.mode)
+        else: return x
+
+class ReflectionPad():
+    def __init__(self, pad, mode=cv2.BORDER_REFLECT):
+        self.pad,self.mode = pad,mode
+
+    def add_pad(self, img):
+        return cv2.copyMakeBorder(img, self.pad, self.pad, self.pad, self.pad, self.mode)
+
+    def __call__(self, x, y=None):
+        x = self.add_pad(x)
+        if y is not None: return x, self.add_pad(y)
+        else: return x
+
+class RandomLighting():
+    def __init__(self, b, c): self.b,self.c = b,c
+
+    def __call__(self, x, y=None):
+        b = rand0(self.b)
+        c = rand0(self.c)
+        c = -1/(c-1) if c<0 else c+1
+        x = lighting(x, b, c)
+        if y is not None: return x, lighting(y, b, c)
+        else: return x
+
+class RandomDihedral():
+    def __call__(self, x):
+        x = np.rot90(x, random.randint(0,3))
+        return x.copy() if random.random()<0.5 else np.fliplr(x).copy()
+
+def RandomFlip(): return lambda x: x if random.random()<0.5 else np.fliplr(x).copy()
+
+def to_tensor(x): return T(np.rollaxis(x, 2))
+
+def compose(im, fns):
+    for fn in fns: im=fn(im)
+    return im
+
+def base_gen(fns=None):
+    if fns is None: fns=[]
+    if not isinstance(fns, collections.Iterable): fns=[fns]
+    return lambda im: compose(im, fns)
+    
+def image_gen(normalizer, sz, tfms=[]):
+    return base_gen([normalizer, ScaleCenter(sz)] + tfms + [to_tensor])
+
+def image_rand_gen(normalizer, sz, max_zoom, tfms=[]):
+    return base_gen(tfms + [normalizer, RandomScaleCenter(sz, max_zoom), to_tensor])

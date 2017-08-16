@@ -79,21 +79,6 @@ def copy_weights(from_layers, to_layers):
     for from_layer,to_layer in zip(from_layers, to_layers):
         to_layer.set_weights(from_layer.get_weights())
 
-def copy_model(m):
-    res = Sequential(copy_layers(m.layers))
-    copy_weights(m.layers, res.layers)
-    return res
-
-def insert_layer(model, new_layer, index):
-    res = Sequential()
-    for i,layer in enumerate(model.layers):
-        if i==index: res.add(new_layer)
-        copied = layer_from_config(wrap_config(layer))
-        res.add(copied)
-        copied.set_weights(layer.get_weights())
-    return res
-
-
 def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix',
         cmap=plt.cm.Blues):
     """
@@ -125,48 +110,7 @@ def save_array(fname, arr):
     c=bcolz.carray(arr, rootdir=fname, mode='w')
     c.flush()
 
-
-def load_array(fname):
-    return bcolz.open(fname)[:]
-
-
-def mk_size(img, r2c):
-    r,c,_ = img.shape
-    curr_r2c = r/c
-    new_r, new_c = r,c
-    if r2c>curr_r2c:
-        new_r = floor(c*r2c)
-    else:
-        new_c = floor(r/r2c)
-    arr = np.zeros((new_r, new_c, 3), dtype=np.float32)
-    r2=(new_r-r)//2
-    c2=(new_c-c)//2
-    arr[floor(r2):floor(r2)+r,floor(c2):floor(c2)+c] = img
-    return arr
-
-
-def mk_square(img):
-    x,y,_ = img.shape
-    maxs = max(img.shape[:2])
-    y2=(maxs-y)//2
-    x2=(maxs-x)//2
-    arr = np.zeros((maxs,maxs,3), dtype=np.float32)
-    arr[floor(x2):floor(x2)+x,floor(y2):floor(y2)+y] = img
-    return arr
-
-
-def vgg_ft(out_dim):
-    vgg = Vgg16()
-    vgg.ft(out_dim)
-    model = vgg.model
-    return model
-
-def vgg_ft_bn(out_dim):
-    vgg = Vgg16BN()
-    vgg.ft(out_dim)
-    model = vgg.model
-    return model
-
+def load_array(fname): return bcolz.open(fname)[:]
 
 def get_classes(path):
     batches = get_batches(path+'train', shuffle=False, batch_size=1)
@@ -175,19 +119,11 @@ def get_classes(path):
     return (val_batches.classes, batches.classes, onehot(val_batches.classes), onehot(batches.classes),
         val_batches.filenames, batches.filenames, test_batches.filenames)
 
-
-def split_at(model, layer_type):
-    layers = model.layers
-    layer_idx = [index for index,layer in enumerate(layers)
-                 if type(layer) is layer_type][-1]
-    return layers[:layer_idx+1], layers[layer_idx+1:]
-
 def limit_mem():
     K.get_session().close()
     cfg = K.tf.ConfigProto()
     cfg.gpu_options.allow_growth = True
     K.set_session(K.tf.Session(config=cfg))
-
 
 class MixIterator(object):
     def __init__(self, iters):
@@ -215,5 +151,3 @@ class MixIterator(object):
             n0 = np.concatenate([n[0] for n in nexts])
             n1 = np.concatenate([n[1] for n in nexts])
             return (n0, n1)
-
-

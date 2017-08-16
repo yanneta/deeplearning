@@ -1,17 +1,4 @@
-import os, json, numpy as np, math, bcolz
-from glob import glob
-
-from keras import backend as K
-from keras.layers import BatchNormalization
-from keras.utils.data_utils import get_file
-from keras.models import Model
-from keras.layers import Flatten, Dense, Dropout, Lambda, Input
-from keras.optimizers import SGD, RMSprop, Adam
-from keras.preprocessing import image
-from keras.applications.vgg16 import VGG16
-
-from keras.utils.generic_utils import Progbar
-from keras.utils.data_utils import GeneratorEnqueuer
+from imports import *
 
 def predict_to_bcolz(m, generator, preds, labels, workers=2, verbose=0):
     m._make_predict_function()
