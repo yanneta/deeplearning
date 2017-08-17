@@ -9,24 +9,11 @@ imagenet_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((
 def preprocess_imagenet(x): return x[..., ::-1] - imagenet_mean
 def preprocess_scale(x): return ((x/255.)-0.5)*2
 
-def center_crop(im, min_sz=None):
+def scale_min(im, targ):
     r,c,_ = im.shape
-    if min_sz is None: min_sz = min(r,c)
-    start_r = math.ceil((r-min_sz)/2)
-    start_c = math.ceil((c-min_sz)/2)
-    assert(start_r+min_sz<=r)
-    assert(start_c+min_sz<=c)
-    return im[start_r:start_r+min_sz, start_c:start_c+min_sz]
-
-def scale_to(x, ratio, targ): return max(math.floor(x*ratio), targ)
-    
-def scale_min(im, targ_r):
-    r,c,_ = im.shape
-    ratio = targ_r/min(r,c)
-    sz = (scale_to(c, ratio, targ_r), scale_to(r, ratio, targ_r))
+    ratio = targ/min(r,c)
+    sz = (scale_to(c, ratio, targ), scale_to(r, ratio, targ))
     return cv2.resize(im, sz)
-
-def scale_and_center(im, targ_r): return center_crop(scale_min(im, targ_r))
 
 def zoom_cv(x,z):
     if z==0: return x
@@ -56,28 +43,55 @@ def rotate_cv(img, deg, mode=cv2.BORDER_REFLECT):
     M = cv2.getRotationMatrix2D((cols/2,rows/2),deg,1)
     return cv2.warpAffine(img,M,(cols,rows), borderMode=mode)
 
+def center_crop(im, min_sz=None):
+    r,c,_ = im.shape
+    if min_sz is None: min_sz = min(r,c)
+    start_r = math.ceil((r-min_sz)/2)
+    start_c = math.ceil((c-min_sz)/2)
+    return crop(im, start_r, start_c, min_sz)
+
+def scale_to(x, ratio, targ): return max(math.floor(x*ratio), targ)
+    
+def crop(im, r, c, sz): return im[r:r+sz, c:c+sz]
+    
 def det_dihedral(dih): return lambda x: dihedral(dih)
 def det_stretch(sr, sc): return lambda x: stretch_cv(x, sr, sc)
 def det_lighting(b, c): return lambda x: lighting(x, b, c)
 def det_rotate(deg): return lambda x: rotate_cv(x, deg)
 def det_zoom(zoom): return lambda x: zoom_cv(x, zoom)
 
-def ScaleCenter(sz): return lambda x: scale_and_center(x, sz)
-
 def rand0(s): return random.random()*(s*2)-s
 
-class RandomScaleCenter(): 
-    def __init__(self, targ_r, max_zoom): 
-        self.targ_r,self.max_zoom = targ_r,max_zoom
-    def __call__(self, x): 
-        sz = int(random.uniform(1., self.max_zoom)*self.targ_r)
-        im = scale_min(x, sz)
-        r,c,_ = im.shape
-        start_r = random.randint(0, r-self.targ_r)
-        start_c = random.randint(0, c-self.targ_r)
-        assert(start_r+self.targ_r<=r)
-        assert(start_c+self.targ_r<=c)
-        return im[start_r:start_r+self.targ_r, start_c:start_c+self.targ_r]
+def CenterCrop(min_sz=None): return lambda x: center_crop(x, min_sz)
+def Scale(sz): return lambda x: scale_min(x, sz)
+
+class RandomScale(): 
+    def __init__(self, targ, max_zoom, p=0.75): 
+        self.targ,self.max_zoom,self.p = targ,max_zoom,p
+    def __call__(self, x):
+        if random.random()<self.p: 
+            sz = int(random.uniform(1., self.max_zoom)*self.targ)
+        else: sz = self.targ
+        return scale_min(x, sz)
+
+class RandomRotate():
+    def __init__(self, deg, p=0.75, mode=cv2.BORDER_REFLECT):
+        self.deg,self.mode,self.p = deg,mode,p
+    def __call__(self, x, y=None):
+        deg = rand0(self.deg)
+        if random.random()<self.p: 
+            x = rotate_cv(x, deg, self.mode)
+            if y is not None: y = rotate_cv(y, deg, self.mode)
+        return x if y is None else (x,y)
+    
+class RandomCrop(): 
+    def __init__(self, targ): self.targ = targ
+    def __call__(self, x):
+        r,c,_ = x.shape
+        start_r = random.randint(0, r-self.targ)
+        start_c = random.randint(0, c-self.targ)
+        res = crop(x, start_r, start_c, self.targ)
+        return res
 
 class Normalize():
     def __init__(self, m, s):
@@ -101,19 +115,6 @@ class RandomRotateZoom():
             else:             x = stretch_cv(x, 0, sa)
         assert (y is None) # not implemented
         return x
-
-class RandomRotate():
-    def __init__(self, deg, p=0.75, mode=cv2.BORDER_REFLECT):
-        self.deg,self.p,self.mode = deg,p,mode
-
-    def __call__(self, x, y=None):
-        choice = random.random()
-        deg = rand0(self.deg)
-        if choice>self.p: pass
-        else:
-            x = rotate_cv(x, deg, self.mode)
-        if y is not None: return x, rotate_cv(y, deg, self.mode)
-        else: return x
 
 class ReflectionPad():
     def __init__(self, pad, mode=cv2.BORDER_REFLECT):
@@ -151,13 +152,25 @@ def compose(im, fns):
     for fn in fns: im=fn(im)
     return im
 
-def base_gen(fns=None):
-    if fns is None: fns=[]
-    if not isinstance(fns, collections.Iterable): fns=[fns]
-    return lambda im: compose(im, fns)
-    
-def image_gen(normalizer, sz, tfms=[]):
-    return base_gen([normalizer, ScaleCenter(sz)] + tfms + [to_tensor])
+class Transforms():
+    def __init__(self, sz, tfms, rand_crop=False): 
+        self.sz = sz
+        crop_fn = RandomCrop if rand_crop else CenterCrop
+        self.tfms = tfms + [crop_fn(sz), to_tensor]
+                    
+    def __call__(self, im): return compose(im, self.tfms)
 
-def image_rand_gen(normalizer, sz, max_zoom, tfms=[]):
-    return base_gen(tfms + [normalizer, RandomScaleCenter(sz, max_zoom), to_tensor])
+
+def image_gen2(normalizer, sz, tfms=None):
+    if tfms is None: tfms=[]
+    elif not isinstance(tfms, collections.Iterable): tfms=[tfms]
+    return Transforms(sz, [Scale(sz)] + tfms + [normalizer], rand_crop=False)
+
+def image_gen(normalizer, sz, max_zoom=None, tfms=None):
+    if tfms is None: tfms=[]
+    elif not isinstance(tfms, collections.Iterable): tfms=[tfms]
+    rand_crop = max_zoom is not None
+    scale = RandomScale(sz, max_zoom) if rand_crop else Scale(sz)
+    return Transforms(sz, [scale] + tfms + [normalizer], rand_crop=rand_crop)
+
+def noop(x): return x

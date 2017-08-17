@@ -29,10 +29,10 @@ class LossRecorder(Callback):
 
         
 class LR_Finder(LossRecorder):
-    def __init__(self, nb, start_lr=1e-7, end_lr=10, patience=10):
+    def __init__(self, nb, start_lr=1e-7, end_lr=10):
         super().__init__()
         self.lr_mult = (end_lr/start_lr)**(1/nb)
-        self.start_lr,self.patience = start_lr,patience
+        self.start_lr = start_lr
 
     def incr_lr(self):
         return self.start_lr * (self.lr_mult**self.iteration)
@@ -40,22 +40,15 @@ class LR_Finder(LossRecorder):
     def on_train_begin(self, learner):
         super().on_train_begin(learner)
         self.best=1e9
-        self.best_iters=0
         learner.lr = self.incr_lr()
             
     def on_batch_end(self, loss):
         super().on_batch_end(loss)
-        if math.isnan(loss) or loss>self.best*10: return True
+        if self.iteration<10: return
+        if math.isnan(loss) or loss>self.best*4: return True
         self.learner.lr = self.incr_lr()
         self.losses[-1]=loss
-        if self.iteration<10: return
-        
-        if loss>self.best*2:
-            self.best_iters+=1
-            if self.best_iters>self.patience: return True
-        else:
-            self.best_iters=0
-            if loss<self.best: self.best=loss
+        if loss<self.best: self.best=loss
 
     def plot(self):
         plt.plot(self.lrs[:-5], self.losses[:-5])

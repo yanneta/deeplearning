@@ -18,8 +18,22 @@ def set_learning_rate(opt, lr):
 def trainable_params(m):
     return [p for p in m.parameters() if p.requires_grad]
 
+def set_trainable_attr(m,b): m.trainable=b
+    
 def set_trainable(l, b):
+    l.apply(lambda m: set_trainable_attr(m,b))
     for p in l.parameters(): p.requires_grad = b
+
+def cond_init(m, init_fn):
+    if isinstance(m, (nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d)):
+        m.weight.data.fill_(1)
+        m.bias.data.zero_()
+    else:
+        if hasattr(m, 'weight'): init_fn(m.weight)
+        if hasattr(m, 'bias'): m.bias.data.fill_(1.)
+
+def apply_init(m, init_fn):
+    m.apply(lambda x: cond_init(x, init_fn))
 
 class Lambda(nn.Module):
     def __init__(self, f): super().__init__(); self.f=f
@@ -42,7 +56,7 @@ def num_features(m):
     else: return num_features(children(m)[-1])
 
 def accuracy(preds, targs):
-    preds = np.argmax(preds, axis=1)[:,0]
+    preds = np.argmax(preds, axis=1)
     return (preds==targs).mean()
 
 def accuracy_thresh(thresh): 
@@ -63,21 +77,17 @@ def step(m, opt, x, y, crit):
     return loss.data[0]
 
 def set_train(m):
-    c = children(m)
-    if len(c)>0:
-        for l in c: set_train(l)
-    else:
-        if hasattr(m, 'running_mean'): m.eval()
-        else: m.train()
+    if len(children(m))>0: return
+    if hasattr(m, 'running_mean') and not m.trainable: m.eval()
+    else: m.train()
         
-def unwrapped(f): return lambda *args: to_np(f(*args))[0]
-
 def fit(m, data, epochs, crit, opt, metrics=[], callbacks=[]):
     avg_mom=0.95
     
     for epoch in trange(epochs, desc='Epoch'):
         avg_loss=None
-        set_train(m)
+        m.apply(set_train)
+        #m.eval()
         t = tqdm(data.trn_dl)
         for x,y in t:
             loss = step(m,opt,x,y, crit)
