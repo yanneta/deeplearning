@@ -1,11 +1,27 @@
 from imports import *
 from torch_imports import *
 from fast_gen import *
-    
+
 imagenet_stats = ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 inception_stats = ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
 inception_models = (inception_4, inceptionresnet_2)
 
+def resize_img(fname, targ, path, new_path):
+    dest = os.path.join(path,new_path,str(targ),fname)
+    if os.path.exists(dest): return
+    im = PIL.Image.open(os.path.join(path, fname)).convert('RGB')
+    r,c = im.size
+    ratio = targ/min(r,c)
+    sz = (scale_to(r, ratio, targ), scale_to(c, ratio, targ))
+    os.makedirs(os.path.split(dest)[0], exist_ok=True)
+    im.resize(sz, PIL.Image.LINEAR).save(dest)
+
+def resize_imgs(fnames, targ, path, new_path):
+    with ThreadPoolExecutor(8) as e:
+        ims = e.map(lambda x: resize_img(x, targ, path, 'tmp'), fnames)
+        for x in tqdm(ims, total=len(fnames)): pass
+    return os.path.join(path,new_path,str(targ))
+        
 def read_dirs(path, folder):
     full_path = os.path.join(path, folder)
     all_labels = [os.path.basename(os.path.dirname(f)) 
@@ -68,22 +84,18 @@ class BaseDataset(Dataset):
         
     @abstractmethod
     def get_n(self): raise NotImplementedError
-        
     @abstractmethod
     def get_c(self): raise NotImplementedError
-        
     @abstractmethod
     def get_sz(self): raise NotImplementedError
-        
     @abstractmethod
     def get_x(self, i): raise NotImplementedError
-        
     @abstractmethod
     def get_y(self, i): raise NotImplementedError
-
     @property
     def is_multi(self): return False
-        
+
+    
 class FilesDataset(BaseDataset):
     def __init__(self, fnames, transform, path):
         self.path,self.fnames = path,fnames
@@ -93,7 +105,11 @@ class FilesDataset(BaseDataset):
     def get_x(self, i): 
         im = PIL.Image.open(os.path.join(self.path, self.fnames[i])).convert('RGB')
         return np.array(im, dtype=np.float32)/255.
+    def resize_imgs(self, targ, new_path):
+        dest = resize_imgs(self.fnames, targ, self.path, new_path)
+        return self.__class__(self.fnames, self.y, self.transform, dest)
 
+            
 class FilesArrayDataset(FilesDataset):
     def __init__(self, fnames, y, transform, path):
         self.y=y
@@ -101,14 +117,17 @@ class FilesArrayDataset(FilesDataset):
         super().__init__(fnames, transform, path)
     def get_y(self, i): return self.y[i]
 
+    
 class FilesIndexArrayDataset(FilesArrayDataset):
     def get_c(self): return int(self.y.max())+1
 
+    
 class FilesNhotArrayDataset(FilesArrayDataset):
     def get_c(self): return self.y.shape[1]
     @property
     def is_multi(self): return True
 
+    
 class ArraysDataset(BaseDataset):
     def __init__(self, x, y, transform):
         self.x,self.y=x,y
@@ -121,14 +140,17 @@ class ArraysDataset(BaseDataset):
     def get_n(self): return len(self.y)
     def get_sz(self): return self.x.shape[1]
 
+    
 class ArraysIndexDataset(ArraysDataset):
     def get_c(self): return int(self.y.max())+1
 
+    
 class ArraysNhotDataset(ArraysDataset):
     def get_c(self): return self.y.shape[1]
     @property
     def is_multi(self): return True
 
+    
 class ModelData():
     def __init__(self, path, datasets, bs, num_workers): 
         trn_ds,val_ds = datasets
@@ -136,34 +158,39 @@ class ModelData():
         self.trn_dl,self.fix_dl,self.val_dl = [self.get_dl(ds,shuf) 
             for ds,shuf in [(trn_ds,True),(trn_ds,False),(val_ds,False)]]
 
-    @property
-    def sz(self): return self.trn_dl.dataset.sz
-    @property
-    def c(self): return self.trn_dl.dataset.c
-    @property
-    def trn_y(self): return self.trn_dl.dataset.y
-    @property
-    def val_y(self): return self.val_dl.dataset.y
-
     def get_dl(self, ds, shuffle):
         return DataLoader(ds, batch_size=self.bs, shuffle=shuffle,
             num_workers=self.num_workers, pin_memory=True)
 
+    @property
+    def trn_ds(self): return self.trn_dl.dataset
+    @property
+    def val_ds(self): return self.val_dl.dataset
+    @property
+    def sz(self): return self.trn_ds.sz
+    @property
+    def c(self): return self.trn_ds.c
+    @property
+    def trn_y(self): return self.trn_ds.y
+    @property
+    def val_y(self): return self.val_ds.y
+
+    def resize(self, targ, new_path):
+        ds = self.trn_ds.resize_imgs(targ,new_path), self.val_ds.resize_imgs(targ,new_path)
+        return self.__class__(ds[0].path, ds, self.bs, self.num_workers)
+
+    
 class ClassifierData(ModelData):
-    def __init__(self, path, datasets, trn_y, bs, num_workers=4):
-        self.path = path
-        super().__init__(path, datasets, bs, num_workers)
-        
     @property
     def is_multi(self): return self.trn_dl.dataset.is_multi
     
-    def tfms_from_model(f_model, sz, max_zoom=None, aug_tfms=[]):
+    def tfms_from_model(f_model, sz, aug_tfms=[], max_zoom=None, pad=0):
         stats = inception_stats if f_model in inception_models else imagenet_stats
         tfm_norm = Normalize(*stats)
-        val_tfm = image_gen(tfm_norm, sz)
-        trn_tfm=image_gen(tfm_norm, sz, max_zoom, aug_tfms)
+        val_tfm = image_gen(tfm_norm, sz, pad=pad)
+        trn_tfm=image_gen(tfm_norm, sz, tfms=aug_tfms, max_zoom=max_zoom, pad=pad)
         return trn_tfm, val_tfm
-
+        
     @classmethod
     def get_ds(self, fn, trn, val, tfms, **kwargs):
         return (fn(trn[0], trn[1], tfms[0], **kwargs),
@@ -172,13 +199,13 @@ class ClassifierData(ModelData):
     @classmethod
     def from_arrays(self, path, trn, val, bs, tfms=(None,None), num_workers=4):
         datasets = self.get_ds(ArraysIndexDataset, trn, val, tfms)
-        return self(path, datasets, trn[1], bs, num_workers)
+        return self(path, datasets, bs, num_workers)
 
     @classmethod
     def from_paths(self, path, bs, tfms, trn_name='train', val_name='val', num_workers=4):
         trn,val = [folder_source(path, o) for o in ('train', 'valid')]
         datasets = self.get_ds(FilesIndexArrayDataset, trn, val, tfms, path=path)
-        return self(path, datasets, trn[1], bs, num_workers)
+        return self(path, datasets, bs, num_workers)
 
     @classmethod
     def from_csv(self, path, csv_fname, bs, tfms,
@@ -193,4 +220,4 @@ class ClassifierData(ModelData):
         
         f = FilesIndexArrayDataset if len(trn[1].shape)==1 else FilesNhotArrayDataset
         datasets = self.get_ds(f, trn, val, tfms, path=path)
-        return self(path, datasets, trn[1], bs, num_workers)
+        return self(path, datasets, bs, num_workers)

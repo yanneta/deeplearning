@@ -1,5 +1,6 @@
 from imports import *
 import torch
+from scipy.misc import imresize
 
 conv_dict = {np.dtype('int32'): torch.IntTensor, np.dtype('int64'): torch.LongTensor,
     np.dtype('float32'): torch.FloatTensor, np.dtype('float64'): torch.DoubleTensor}
@@ -13,7 +14,7 @@ def scale_min(im, targ):
     r,c,_ = im.shape
     ratio = targ/min(r,c)
     sz = (scale_to(c, ratio, targ), scale_to(r, ratio, targ))
-    return cv2.resize(im, sz)
+    return cv2.resize(im, sz)#, interpolation=cv2.INTER_AREA)
 
 def zoom_cv(x,z):
     if z==0: return x
@@ -24,7 +25,7 @@ def zoom_cv(x,z):
 def stretch_cv(x,sr,sc):
     if sr==0 and sc==0: return x
     r=x.shape[0]; c=x.shape[1]
-    x = cv2.resize(x, None, fx=sr+1, fy=sc+1)
+    x = cv2.resize(x, None, fx=sr+1, fy=sc+1)#, interpolation=cv2.INTER_CUBIC)
     nr=x.shape[0]; nc=x.shape[1]
     cr = (nr-r)//2; cc = (nc-c)//2
     return x[cr:r+cr, cc:c+cc]
@@ -157,20 +158,18 @@ class Transforms():
         self.sz = sz
         crop_fn = RandomCrop if rand_crop else CenterCrop
         self.tfms = tfms + [crop_fn(sz), to_tensor]
-                    
     def __call__(self, im): return compose(im, self.tfms)
 
-
-def image_gen2(normalizer, sz, tfms=None):
+def image_gen(normalizer, sz, tfms=None, max_zoom=None, pad=0):
     if tfms is None: tfms=[]
     elif not isinstance(tfms, collections.Iterable): tfms=[tfms]
-    return Transforms(sz, [Scale(sz)] + tfms + [normalizer], rand_crop=False)
-
-def image_gen(normalizer, sz, max_zoom=None, tfms=None):
-    if tfms is None: tfms=[]
-    elif not isinstance(tfms, collections.Iterable): tfms=[tfms]
-    rand_crop = max_zoom is not None
-    scale = RandomScale(sz, max_zoom) if rand_crop else Scale(sz)
-    return Transforms(sz, [scale] + tfms + [normalizer], rand_crop=rand_crop)
+    scale = [RandomScale(sz, max_zoom) if max_zoom is not None else Scale(sz)]
+    if pad: scale.append(ReflectionPad(pad))
+    return Transforms(sz+pad, scale + tfms + [normalizer], 
+                      rand_crop=max_zoom is not None)
 
 def noop(x): return x
+
+transforms_basic    = [RandomRotate(10), RandomLighting(0.05, 0.05)]
+transforms_side_on  = transforms_basic + [RandomFlip()]
+transforms_top_down = transforms_basic + [RandomDihedral()]

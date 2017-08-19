@@ -25,15 +25,20 @@ def set_trainable(l, b):
     for p in l.parameters(): p.requires_grad = b
 
 def cond_init(m, init_fn):
-    if isinstance(m, (nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d)):
-        m.weight.data.fill_(1)
-        m.bias.data.zero_()
-    else:
+    if not isinstance(m, (nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d)):
         if hasattr(m, 'weight'): init_fn(m.weight)
-        if hasattr(m, 'bias'): m.bias.data.fill_(1.)
+        if hasattr(m, 'bias'): m.bias.data.fill_(0.)
 
 def apply_init(m, init_fn):
     m.apply(lambda x: cond_init(x, init_fn))
+
+class AdaptiveConcatPool2d(nn.Module):
+    def __init__(self, sz=None):
+        super().__init__()
+        sz = sz or (1,1)
+        self.ap = nn.AdaptiveAvgPool2d(sz)
+        self.mp = nn.AdaptiveMaxPool2d(sz)
+    def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
 
 class Lambda(nn.Module):
     def __init__(self, f): super().__init__(); self.f=f
@@ -47,13 +52,18 @@ def predict_to_bcolz(m, gen, arr, workers=4):
     lock=threading.Lock()
     m.eval()
     for x,*_ in tqdm(gen):
-        arr.append(pred_batch(m, x))
-        with lock: arr.flush()
+        y = pred_batch(m, x)
+        with lock:
+            arr.append(y)
+            arr.flush()
 
 def num_features(m): 
-    if hasattr(m, 'num_features'): return m.num_features
-    elif hasattr(m, 'out_features'): return m.out_features
-    else: return num_features(children(m)[-1])
+    c=children(m)
+    if hasattr(c[-1], 'num_features'): return c[-1].num_features
+    elif hasattr(c[-1], 'out_features'): return c[-1].out_features
+    if hasattr(c[-2], 'num_features'): return c[-2].num_features
+    elif hasattr(c[-2], 'out_features'): return c[-2].out_features
+    return num_features(children(m)[-1])
 
 def accuracy(preds, targs):
     preds = np.argmax(preds, axis=1)
@@ -78,7 +88,7 @@ def step(m, opt, x, y, crit):
 
 def set_train(m):
     if len(children(m))>0: return
-    if hasattr(m, 'running_mean') and not m.trainable: m.eval()
+    if hasattr(m, 'running_mean') and not (hasattr(m,'trainable') and m.trainable): m.eval()
     else: m.train()
         
 def fit(m, data, epochs, crit, opt, metrics=[], callbacks=[]):
@@ -87,7 +97,7 @@ def fit(m, data, epochs, crit, opt, metrics=[], callbacks=[]):
     for epoch in trange(epochs, desc='Epoch'):
         avg_loss=None
         m.apply(set_train)
-        #m.eval()
+        #m.train()
         t = tqdm(data.trn_dl)
         for x,y in t:
             loss = step(m,opt,x,y, crit)

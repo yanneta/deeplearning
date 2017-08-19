@@ -69,6 +69,7 @@ class CosAnneal(LossRecorder):
         self.learner.lr = self.cos_anneal()
 
     def cos_anneal(self):
+        if self.iteration<self.check/20: return self.init_lr/100
         cos_inner = np.pi * ((self.iteration-2) % (self.check))
         cos_out = np.cos(cos_inner/self.check) + 1
         return float(self.init_lr / 2 * cos_out)
