@@ -1,10 +1,7 @@
 from imports import *
 import torch
-from scipy.misc import imresize
-
-conv_dict = {np.dtype('int32'): torch.IntTensor, np.dtype('int64'): torch.LongTensor,
-    np.dtype('float32'): torch.FloatTensor, np.dtype('float64'): torch.DoubleTensor}
-def T(a): return conv_dict[a.dtype](a)
+from layer_optimizer import *
+#from scipy.misc import imresize
 
 imagenet_mean = np.array([103.939, 116.779, 123.68], dtype=np.float32).reshape((1,1,3))
 def preprocess_imagenet(x): return x[..., ::-1] - imagenet_mean
@@ -14,7 +11,7 @@ def scale_min(im, targ):
     r,c,_ = im.shape
     ratio = targ/min(r,c)
     sz = (scale_to(c, ratio, targ), scale_to(r, ratio, targ))
-    return cv2.resize(im, sz)#, interpolation=cv2.INTER_AREA)
+    return cv2.resize(im, sz)
 
 def zoom_cv(x,z):
     if z==0: return x
@@ -25,7 +22,7 @@ def zoom_cv(x,z):
 def stretch_cv(x,sr,sc):
     if sr==0 and sc==0: return x
     r=x.shape[0]; c=x.shape[1]
-    x = cv2.resize(x, None, fx=sr+1, fy=sc+1)#, interpolation=cv2.INTER_CUBIC)
+    x = cv2.resize(x, None, fx=sr+1, fy=sc+1)
     nr=x.shape[0]; nc=x.shape[1]
     cr = (nr-r)//2; cc = (nc-c)//2
     return x[cr:r+cr, cc:c+cc]
@@ -147,7 +144,7 @@ class RandomDihedral():
 
 def RandomFlip(): return lambda x: x if random.random()<0.5 else np.fliplr(x).copy()
 
-def to_tensor(x): return T(np.rollaxis(x, 2))
+def channel_dim(x): return np.rollaxis(x, 2)
 
 def compose(im, fns):
     for fn in fns: im=fn(im)
@@ -157,7 +154,7 @@ class Transforms():
     def __init__(self, sz, tfms, rand_crop=False): 
         self.sz = sz
         crop_fn = RandomCrop if rand_crop else CenterCrop
-        self.tfms = tfms + [crop_fn(sz), to_tensor]
+        self.tfms = tfms + [crop_fn(sz), channel_dim]
     def __call__(self, im): return compose(im, self.tfms)
 
 def image_gen(normalizer, sz, tfms=None, max_zoom=None, pad=0):

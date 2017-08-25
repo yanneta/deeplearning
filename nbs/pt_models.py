@@ -1,28 +1,9 @@
 from imports import *
 from torch_imports import *
+from layer_optimizer import *
 
 def save_model(m, p): torch.save(m.state_dict(), p)
 def load_model(m, p): m.load_state_dict(torch.load(p))
-
-def V(x): return Variable(x.cuda(async=True))
-def VV(x): return Variable(x.cuda(async=True), volatile=True)
-def to_np(v): return v.data.cpu().numpy()
-def pred_batch(m, x): return to_np(m(VV(x)))
-
-def SGD_Momentum(momentum): 
-    return lambda *args, **kwargs: optim.SGD(*args, momentum=momentum, **kwargs)
-
-def set_learning_rate(opt, lr):
-    for group in opt.param_groups: group['lr'] = lr
-
-def trainable_params(m):
-    return [p for p in m.parameters() if p.requires_grad]
-
-def set_trainable_attr(m,b): m.trainable=b
-    
-def set_trainable(l, b):
-    l.apply(lambda m: set_trainable_attr(m,b))
-    for p in l.parameters(): p.requires_grad = b
 
 def cond_init(m, init_fn):
     if not isinstance(m, (nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d)):
@@ -43,7 +24,7 @@ class AdaptiveConcatPool2d(nn.Module):
 class Lambda(nn.Module):
     def __init__(self, f): super().__init__(); self.f=f
     def forward(self, x): return self.f(x)
-    
+
 Flatten = Lambda(lambda x: x.view(x.size(0), -1))
 
 def cut_model(m, cut): return list(m.children())[:cut]
@@ -52,7 +33,7 @@ def predict_to_bcolz(m, gen, arr, workers=4):
     lock=threading.Lock()
     m.eval()
     for x,*_ in tqdm(gen):
-        y = pred_batch(m, x)
+        y = to_np(m(VV(x)).data)
         with lock:
             arr.append(y)
             arr.flush()
@@ -75,31 +56,40 @@ def accuracy_thresh(thresh):
 def accuracy_multi(preds, targs, thresh):
     return ((preds>thresh)==targs).mean()
 
+def fbeta_torch(y_true, y_pred, beta, threshold, eps=1e-9):
+    y_pred = (y_pred.float() > threshold).float()
+    y_true = y_true.float()
+    tp = (y_pred * y_true).sum(dim=1)
+    precision = tp / (y_pred.sum(dim=1)+eps)
+    recall = tp / (y_true.sum(dim=1)+eps)
+    return torch.mean(
+        precision*recall / (precision*(beta**2)+recall+eps) * (1+beta**2))
+
 def get_probabilities(net, loader):
     net.eval()
-    return np.vstack(pred_batch(net, data) for data, *_ in loader)
+    return np.vstack(net(VV(data)) for data, *_ in loader)
 
-def step(m, opt, x, y, crit):
-    loss = crit(m(V(x)), V(y))
+def step(m, opt, xs, y, crit):
+    loss = crit(m(*V(xs)), V(y))
     opt.zero_grad()
     loss.backward()
     opt.step()
     return loss.data[0]
 
-def set_train(m):
-    if len(children(m))>0: return
+def set_train_mode(m):
     if hasattr(m, 'running_mean') and not (hasattr(m,'trainable') and m.trainable): m.eval()
     else: m.train()
-        
-def fit(m, data, epochs, crit, opt, metrics=[], callbacks=[]):
-    avg_mom=0.95
+
+def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
+    metrics = metrics or []
+    callbacks = callbacks or []
+    avg_mom=0.98
     
     for epoch in trange(epochs, desc='Epoch'):
         avg_loss=None
-        m.apply(set_train)
-        #m.train()
+        apply_leaf(m, set_train_mode)
         t = tqdm(data.trn_dl)
-        for x,y in t:
+        for (*x,y) in t:
             loss = step(m,opt,x,y, crit)
             if avg_loss is None: avg_loss = loss
             avg_loss = avg_loss * avg_mom + loss * (1-avg_mom)
@@ -108,22 +98,24 @@ def fit(m, data, epochs, crit, opt, metrics=[], callbacks=[]):
             for cb in callbacks: stop = stop or cb.on_batch_end(avg_loss)
             if stop: return
             
-        m.eval()
-        res=np.zeros((len(metrics),), dtype=np.float32)
-        loss=0.
-        for x,y in data.val_dl:
-            preds,targs = m(VV(x)),VV(y)
-            res += np.array([f(to_np(preds),to_np(targs)) for f in metrics])
-            loss += crit(preds, targs)
-        res /= len(data.val_dl)
-        loss /= len(data.val_dl)
-        res = [avg_loss, to_np(loss)[0]] + list(res)
-        print(res)
+        vals = validate(m, data.val_dl, crit, metrics)
+        print(np.round([avg_loss] + vals, 6))
         stop=False
-        for cb in callbacks: stop = stop or cb.on_epoch_end(res)
+        for cb in callbacks: stop = stop or cb.on_epoch_end(vals)
         if stop: return
 
-def predict(m, dl, res=[]):
+def validate(m, dl, crit, metrics):
+    preds,targs = predict_with_targs(m, dl)
+    loss=crit(preds,targs).data[0]
+    preds,targs = to_np(preds),to_np(targs)
+    res = [f(preds,targs) for f in metrics]
+    return [loss] + res
+
+def predict(m, dl):
     m.eval()
-    for x,y in dl: res.append(pred_batch(m, x))
-    return res
+    return torch.cat([m(*VV(x)) for *x,_ in dl]).data.cpu()
+
+def predict_with_targs(m, dl):
+    m.eval()
+    preda,targa = zip(*[(m(*VV(x)),y) for *x,y in dl])
+    return torch.cat(preda).data.cpu(), torch.cat(targa)

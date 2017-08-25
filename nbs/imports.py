@@ -5,6 +5,7 @@ from abc import abstractmethod
 from glob import glob, iglob
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
+from collections import Iterable
 
 def in_notebook(): return 'ipykernel' in sys.modules
 

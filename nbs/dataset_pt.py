@@ -1,10 +1,18 @@
 from imports import *
 from torch_imports import *
 from fast_gen import *
+from layer_optimizer import *
 
 imagenet_stats = ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 inception_stats = ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
 inception_models = (inception_4, inceptionresnet_2)
+
+def get_cv_idxs(n, cv_idx=4, val_pct=0.2, seed=42):
+    np.random.seed(seed)
+    n_val = int(val_pct*n)
+    idx_start = cv_idx*n_val
+    idxs = np.random.permutation(n)
+    return idxs[idx_start:idx_start+n_val]
 
 def resize_img(fname, targ, path, new_path):
     dest = os.path.join(path,new_path,str(targ),fname)
@@ -19,13 +27,18 @@ def resize_img(fname, targ, path, new_path):
 def resize_imgs(fnames, targ, path, new_path):
     with ThreadPoolExecutor(8) as e:
         ims = e.map(lambda x: resize_img(x, targ, path, 'tmp'), fnames)
-        for x in tqdm(ims, total=len(fnames)): pass
+        for x in tqdm(ims, total=len(fnames), leave=False): pass
     return os.path.join(path,new_path,str(targ))
+        
+def read_dir(path, folder):
+    full_path = os.path.join(path, folder)
+    fnames = iglob(f"{full_path}/*.*")
+    return [os.path.relpath(f,path) for f in fnames]
         
 def read_dirs(path, folder):
     full_path = os.path.join(path, folder)
-    all_labels = [os.path.basename(os.path.dirname(f)) 
-                  for f in iglob(f"{full_path}/*/")]
+    all_labels = sorted([os.path.basename(os.path.dirname(f)) 
+                  for f in iglob(f"{full_path}/*/")])
     fnames = [iglob(f"{full_path}/{d}/*.*") for d in all_labels]
     pairs = [(os.path.relpath(fn,path), l) for l,f in zip(all_labels, fnames) for fn in f]
     return list(zip(*pairs))+[all_labels]
@@ -47,7 +60,7 @@ def parse_csv_labels(fn, skip_header=True):
     skip = 1 if skip_header else 0
     csv_lines = [o.strip().split(',') for o in open(fn)][skip:]
     csv_labels = {a:b.split(' ') for a,b in csv_lines}
-    all_labels = list(set(p for o in csv_labels.values() for p in o))
+    all_labels = sorted(list(set(p for o in csv_labels.values() for p in o)))
     label2idx = {v:k for k,v in enumerate(all_labels)}
     return sorted(csv_labels.keys()), csv_labels, all_labels, label2idx
 
@@ -60,7 +73,7 @@ def csv_source(folder, csv_file, skip_header=True, suffix=''):
     fnames,csv_labels,all_labels,label2idx = parse_csv_labels(
         csv_file, skip_header)
     label_arr = nhot_labels(label2idx, csv_labels, fnames, len(all_labels))
-    full_names = [fn+suffix for fn in fnames]
+    full_names = [os.path.join(folder,fn+suffix) for fn in fnames]
     is_single = np.all(label_arr.sum(axis=1)==1)
     if is_single: label_arr = np.argmax(label_arr, axis=1)
     return full_names, label_arr, all_labels
@@ -152,13 +165,22 @@ class ArraysNhotDataset(ArraysDataset):
 
     
 class ModelData():
-    def __init__(self, path, datasets, bs, num_workers): 
-        trn_ds,val_ds = datasets
-        self.path,self.bs,self.num_workers = path,bs,num_workers
-        self.trn_dl,self.fix_dl,self.val_dl = [self.get_dl(ds,shuf) 
-            for ds,shuf in [(trn_ds,True),(trn_ds,False),(val_ds,False)]]
+    def __init__(self, trn_dl, val_dl): self.trn_dl,self.val_dl = trn_dl,val_dl
+        
+        
+class ImageData(ModelData):
+    def __init__(self, path, datasets, bs, num_workers, classes): 
+        trn_ds,val_ds,fix_ds,aug_ds,test_ds,test_aug_ds = datasets
+        self.path,self.bs,self.num_workers,self.classes = path,bs,num_workers,classes
+        self.trn_dl,self.val_dl,self.fix_dl,self.aug_dl,self.test_dl,self.test_aug_dl = [
+            self.get_dl(ds,shuf) for ds,shuf in [
+                (trn_ds,True),(val_ds,False),(fix_ds,False),(aug_ds,False),
+                (test_ds,False),(test_aug_ds,False)
+            ]
+        ]
 
     def get_dl(self, ds, shuffle):
+        if ds is None: return None
         return DataLoader(ds, batch_size=self.bs, shuffle=shuffle,
             num_workers=self.num_workers, pin_memory=True)
 
@@ -175,49 +197,74 @@ class ModelData():
     @property
     def val_y(self): return self.val_ds.y
 
+    def resized(self, dl, targ, new_path):
+        return dl.dataset.resize_imgs(targ,new_path) if dl else None
+        
     def resize(self, targ, new_path):
-        ds = self.trn_ds.resize_imgs(targ,new_path), self.val_ds.resize_imgs(targ,new_path)
-        return self.__class__(ds[0].path, ds, self.bs, self.num_workers)
+        new_ds = []
+        dls = [self.trn_dl,self.val_dl,self.fix_dl,self.aug_dl]
+        if self.test_dl: dls += [self.test_dl, self.test_aug_dl]
+        else: dls += [None,None]
+        t = tqdm(dls)
+        for dl in t: new_ds.append(self.resized(dl, targ, new_path))
+        t.close()
+        return self.__class__(new_ds[0].path, new_ds, self.bs, self.num_workers, self.classes)
 
     
-class ClassifierData(ModelData):
+class ImageClassifierData(ImageData):
     @property
     def is_multi(self): return self.trn_dl.dataset.is_multi
-    
-    def tfms_from_model(f_model, sz, aug_tfms=[], max_zoom=None, pad=0):
-        stats = inception_stats if f_model in inception_models else imagenet_stats
-        tfm_norm = Normalize(*stats)
-        val_tfm = image_gen(tfm_norm, sz, pad=pad)
-        trn_tfm=image_gen(tfm_norm, sz, tfms=aug_tfms, max_zoom=max_zoom, pad=pad)
-        return trn_tfm, val_tfm
         
     @classmethod
-    def get_ds(self, fn, trn, val, tfms, **kwargs):
-        return (fn(trn[0], trn[1], tfms[0], **kwargs),
-                fn(val[0], val[1], tfms[1], **kwargs))
+    def get_ds(self, fn, trn, val, tfms, test=None, **kwargs):
+        res = [
+            fn(trn[0], trn[1], tfms[0], **kwargs), # train
+            fn(val[0], val[1], tfms[1], **kwargs), # val
+            fn(trn[0], trn[1], tfms[1], **kwargs), # fix
+            fn(val[0], val[1], tfms[0], **kwargs)  # aug
+        ]
+        if test:
+            test_lbls = np.zeros((len(test),1))
+            res += [
+                fn(test, test_lbls, tfms[1], **kwargs), # test
+                fn(test, test_lbls, tfms[0], **kwargs)  # test_aug
+            ]
+        else: res += [None,None]
+        return res
         
     @classmethod
-    def from_arrays(self, path, trn, val, bs, tfms=(None,None), num_workers=4):
+    def from_arrays(self, path, trn, val, bs, tfms=(None,None), classes=None, num_workers=4):
         datasets = self.get_ds(ArraysIndexDataset, trn, val, tfms)
-        return self(path, datasets, bs, num_workers)
+        return self(path, datasets, bs, num_workers, classes=classes)
 
     @classmethod
-    def from_paths(self, path, bs, tfms, trn_name='train', val_name='val', num_workers=4):
+    def from_paths(self, path, bs, tfms, trn_name='train', val_name='val', test_name=None, num_workers=4):
         trn,val = [folder_source(path, o) for o in ('train', 'valid')]
-        datasets = self.get_ds(FilesIndexArrayDataset, trn, val, tfms, path=path)
-        return self(path, datasets, bs, num_workers)
+        test_fnames = read_dir(path, test_name) if test_name else None
+        datasets = self.get_ds(FilesIndexArrayDataset, trn, val, tfms, path=path, test=test_fnames)
+        return self(path, datasets, bs, num_workers, classes=trn[2])
 
     @classmethod
-    def from_csv(self, path, csv_fname, bs, tfms,
-               val_idxs=None, suffix='', skip_header=True, num_workers=4): 
-        fnames,y,_ = csv_source(path, csv_fname, skip_header, suffix)
-
-        val_idxs,fnames = np.array(val_idxs),np.array(fnames)
-        val = fnames[val_idxs],y[val_idxs]
-        mask = np.zeros(len(fnames),dtype=bool)
-        mask[val_idxs] = True
-        trn = fnames[~mask],y[~mask]
+    def from_csv(self, path, folder, csv_fname, bs, tfms,
+               val_idxs=None, suffix='', test_name=None, skip_header=True, num_workers=4): 
+        fnames,y,classes = csv_source(folder, csv_fname, skip_header, suffix)
+        ((val_fnames,trn_fnames),(val_y,trn_y)) = split_by_idx(val_idxs, fnames, y)
         
-        f = FilesIndexArrayDataset if len(trn[1].shape)==1 else FilesNhotArrayDataset
-        datasets = self.get_ds(f, trn, val, tfms, path=path)
-        return self(path, datasets, bs, num_workers)
+        test_fnames = read_dir(path, test_name) if test_name else None
+        f = FilesIndexArrayDataset if len(trn_y.shape)==1 else FilesNhotArrayDataset
+        datasets = self.get_ds(f, (trn_fnames,trn_y), (val_fnames,val_y), tfms,
+                               path=path, test=test_fnames)
+        return self(path, datasets, bs, num_workers, classes=classes)
+
+def split_by_idx(idxs, *a):
+    a = [np.array(o) for o in a]
+    mask = np.zeros(len(a[0]),dtype=bool)
+    mask[np.array(idxs)] = True
+    return [(o[mask],o[~mask]) for o in a]
+
+def tfms_from_model(f_model, sz, aug_tfms=[], max_zoom=None, pad=0):
+    stats = inception_stats if f_model in inception_models else imagenet_stats
+    tfm_norm = Normalize(*stats)
+    val_tfm = image_gen(tfm_norm, sz, pad=pad)
+    trn_tfm=image_gen(tfm_norm, sz, tfms=aug_tfms, max_zoom=max_zoom, pad=pad)
+    return trn_tfm, val_tfm
