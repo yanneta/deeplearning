@@ -63,7 +63,8 @@ class LR_Finder(LR_Updater):
     def calc_lr(self, init_lrs): return init_lrs * (self.lr_mult**self.iteration)
     
     def on_batch_end(self, loss):
-        if math.isnan(loss) or loss>self.best*4: return True
+        if math.isnan(loss) or loss>self.best*4: 
+            return True
         if loss<self.best: self.best=loss
         return super().on_batch_end(loss)
         

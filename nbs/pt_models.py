@@ -105,11 +105,12 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
         if stop: return
 
 def validate(m, dl, crit, metrics):
-    preds,targs = predict_with_targs(m, dl)
-    loss=crit(preds,targs).data[0]
-    preds,targs = to_np(preds),to_np(targs)
-    res = [f(preds,targs) for f in metrics]
-    return [loss] + res
+    loss,res = [],[]
+    for (*x,y) in dl:
+        preds = m(*VV(x))
+        loss.append(crit(preds,y).data[0])
+        res.append([f(to_np(preds),to_np(y)) for f in metrics])
+    return [np.mean(loss)] + list(np.mean(np.stack(res),0))
 
 def predict(m, dl):
     m.eval()

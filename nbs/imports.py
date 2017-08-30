@@ -1,6 +1,6 @@
 import PIL, os, numpy as np, math, collections, cv2, threading, json, bcolz, random, scipy
 import random, pandas as pd, pickle, sys, itertools
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt, seaborn as sns
 from abc import abstractmethod
 from glob import glob, iglob
 from concurrent.futures import ThreadPoolExecutor

@@ -1,3 +1,4 @@
+.vector_cache/
 .ipynb_checkpoints/
 __pycache__/
 tmp/

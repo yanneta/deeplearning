@@ -25,9 +25,10 @@ def resize_img(fname, targ, path, new_path):
     im.resize(sz, PIL.Image.LINEAR).save(dest)
 
 def resize_imgs(fnames, targ, path, new_path):
-    with ThreadPoolExecutor(8) as e:
-        ims = e.map(lambda x: resize_img(x, targ, path, 'tmp'), fnames)
-        for x in tqdm(ims, total=len(fnames), leave=False): pass
+    if not os.path.exists(os.path.join(path,new_path,str(targ),fnames[0])):
+        with ThreadPoolExecutor(8) as e:
+            ims = e.map(lambda x: resize_img(x, targ, path, 'tmp'), fnames)
+            for x in tqdm(ims, total=len(fnames), leave=False): pass
     return os.path.join(path,new_path,str(targ))
         
 def read_dir(path, folder):
@@ -165,9 +166,18 @@ class ArraysNhotDataset(ArraysDataset):
 
     
 class ModelData():
-    def __init__(self, trn_dl, val_dl): self.trn_dl,self.val_dl = trn_dl,val_dl
+    def __init__(self, path, trn_dl, val_dl): self.path,self.trn_dl,self.val_dl = path,trn_dl,val_dl
         
-        
+    @property
+    def trn_ds(self): return self.trn_dl.dataset
+    @property
+    def val_ds(self): return self.val_dl.dataset
+    @property
+    def trn_y(self): return self.trn_ds.y
+    @property
+    def val_y(self): return self.val_ds.y
+
+    
 class ImageData(ModelData):
     def __init__(self, path, datasets, bs, num_workers, classes): 
         trn_ds,val_ds,fix_ds,aug_ds,test_ds,test_aug_ds = datasets
@@ -185,17 +195,9 @@ class ImageData(ModelData):
             num_workers=self.num_workers, pin_memory=True)
 
     @property
-    def trn_ds(self): return self.trn_dl.dataset
-    @property
-    def val_ds(self): return self.val_dl.dataset
-    @property
     def sz(self): return self.trn_ds.sz
     @property
     def c(self): return self.trn_ds.c
-    @property
-    def trn_y(self): return self.trn_ds.y
-    @property
-    def val_y(self): return self.val_ds.y
 
     def resized(self, dl, targ, new_path):
         return dl.dataset.resize_imgs(targ,new_path) if dl else None
@@ -248,7 +250,7 @@ class ImageClassifierData(ImageData):
     def from_csv(self, path, folder, csv_fname, bs, tfms,
                val_idxs=None, suffix='', test_name=None, skip_header=True, num_workers=4): 
         fnames,y,classes = csv_source(folder, csv_fname, skip_header, suffix)
-        ((val_fnames,trn_fnames),(val_y,trn_y)) = split_by_idx(val_idxs, fnames, y)
+        ((val_fnames,trn_fnames),(val_y,trn_y)) = split_by_idx(val_idxs, np.array(fnames), y)
         
         test_fnames = read_dir(path, test_name) if test_name else None
         f = FilesIndexArrayDataset if len(trn_y.shape)==1 else FilesNhotArrayDataset
@@ -257,7 +259,6 @@ class ImageClassifierData(ImageData):
         return self(path, datasets, bs, num_workers, classes=classes)
 
 def split_by_idx(idxs, *a):
-    a = [np.array(o) for o in a]
     mask = np.zeros(len(a[0]),dtype=bool)
     mask[np.array(idxs)] = True
     return [(o[mask],o[~mask]) for o in a]
