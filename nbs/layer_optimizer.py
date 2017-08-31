@@ -7,13 +7,13 @@ def sum_geom(a,r,n):
 conv_dict = {np.dtype('int32'): torch.IntTensor, np.dtype('int64'): torch.LongTensor,
     np.dtype('float32'): torch.FloatTensor, np.dtype('float64'): torch.FloatTensor}
 
-def T(a): 
+def T(a):
     a = np.array(a)
     return conv_dict[a.dtype](a)
 
-def V_(x):  return x if isinstance(x, Variable) else Variable(x.cuda(async=True))
+def V_(x):  return x.cuda(async=True) if isinstance(x, Variable) else Variable(x.cuda(async=True))
 def V(x):   return [V_(o) for o in x] if isinstance(x,list) else V_(x)
-def VV_(x): return x if isinstance(x, Variable) else Variable(x.cuda(async=True), volatile=True)
+def VV_(x): return x.cuda(async=True) if isinstance(x, Variable) else Variable(x.cuda(async=True), volatile=True)
 def VV(x):  return [VV_(o) for o in x] if isinstance(x,list) else VV_(x)
 
 def to_np(v): 
@@ -28,7 +28,7 @@ def split_by_idxs(seq, idxs):
         yield seq[last:idx]
         last = idx
     yield seq[last:]
-    
+
 def SGD_Momentum(momentum): 
     return lambda *args, **kwargs: optim.SGD(*args, momentum=momentum, **kwargs)
 
@@ -64,19 +64,18 @@ class LayerOptimizer():
         if len(wds)==1: wds=wds*len(layer_groups)
         self.layer_groups,self.lrs,self.wds = layer_groups,lrs,wds
         self.opt = opt_fn(self.opt_params())
-            
+
     def opt_params(self):
         params = list(zip(self.layer_groups,self.lrs,self.wds))
         return [opt_params(*p) for p in params]
-    
+
     @property
     def lr(self): return self.lrs[-1]
 
     def set_lrs(self, lrs):
         self.lrs=lrs
         set_lrs(self.opt, lrs)
-        
-        
+
 def set_lrs(opt, lrs):
     if not isinstance(lrs, Iterable): lrs=[lrs]
     if len(lrs)==1: lrs=lrs*len(opt.param_groups)

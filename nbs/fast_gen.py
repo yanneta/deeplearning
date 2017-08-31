@@ -91,6 +91,12 @@ class RandomCrop():
         res = crop(x, start_r, start_c, self.targ)
         return res
 
+class Denormalize():
+    def __init__(self, m, s):
+        self.m=np.array(m, dtype=np.float32)
+        self.s=np.array(s, dtype=np.float32)
+    def __call__(self, x): return x*self.s+self.m
+
 class Normalize():
     def __init__(self, m, s):
         self.m=np.array(m, dtype=np.float32)
@@ -151,18 +157,18 @@ def compose(im, fns):
     return im
 
 class Transforms():
-    def __init__(self, sz, tfms, rand_crop=False): 
-        self.sz = sz
+    def __init__(self, sz, tfms, denorm, rand_crop=False): 
+        self.sz,self.denorm = sz,denorm
         crop_fn = RandomCrop if rand_crop else CenterCrop
         self.tfms = tfms + [crop_fn(sz), channel_dim]
     def __call__(self, im): return compose(im, self.tfms)
 
-def image_gen(normalizer, sz, tfms=None, max_zoom=None, pad=0):
+def image_gen(normalizer, denorm, sz, tfms=None, max_zoom=None, pad=0):
     if tfms is None: tfms=[]
     elif not isinstance(tfms, collections.Iterable): tfms=[tfms]
     scale = [RandomScale(sz, max_zoom) if max_zoom is not None else Scale(sz)]
     if pad: scale.append(ReflectionPad(pad))
-    return Transforms(sz+pad, scale + tfms + [normalizer], 
+    return Transforms(sz+pad, scale + tfms + [normalizer], denorm,
                       rand_crop=max_zoom is not None)
 
 def noop(x): return x

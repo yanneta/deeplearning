@@ -25,7 +25,11 @@ class Lambda(nn.Module):
     def __init__(self, f): super().__init__(); self.f=f
     def forward(self, x): return self.f(x)
 
-Flatten = Lambda(lambda x: x.view(x.size(0), -1))
+class Flatten(nn.Module):
+    def __init__(self): super().__init__()
+    def forward(self, x): return x.view(x.size(0), -1)
+
+#Flatten = Lambda(lambda x: x.view(x.size(0), -1))
 
 def cut_model(m, cut): return list(m.children())[:cut]
 
@@ -84,7 +88,7 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
     metrics = metrics or []
     callbacks = callbacks or []
     avg_mom=0.98
-    
+
     for epoch in trange(epochs, desc='Epoch'):
         avg_loss=None
         apply_leaf(m, set_train_mode)
@@ -97,7 +101,7 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
             stop=False
             for cb in callbacks: stop = stop or cb.on_batch_end(avg_loss)
             if stop: return
-            
+
         vals = validate(m, data.val_dl, crit, metrics)
         print(np.round([avg_loss] + vals, 6))
         stop=False
@@ -105,8 +109,10 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
         if stop: return
 
 def validate(m, dl, crit, metrics):
+    m.eval()
     loss,res = [],[]
     for (*x,y) in dl:
+        y = y.cuda()
         preds = m(*VV(x))
         loss.append(crit(preds,y).data[0])
         res.append([f(to_np(preds),to_np(y)) for f in metrics])

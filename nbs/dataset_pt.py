@@ -30,12 +30,12 @@ def resize_imgs(fnames, targ, path, new_path):
             ims = e.map(lambda x: resize_img(x, targ, path, 'tmp'), fnames)
             for x in tqdm(ims, total=len(fnames), leave=False): pass
     return os.path.join(path,new_path,str(targ))
-        
+
 def read_dir(path, folder):
     full_path = os.path.join(path, folder)
     fnames = iglob(f"{full_path}/*.*")
     return [os.path.relpath(f,path) for f in fnames]
-        
+
 def read_dirs(path, folder):
     full_path = os.path.join(path, folder)
     all_labels = sorted([os.path.basename(os.path.dirname(f)) 
@@ -86,16 +86,16 @@ class BaseDataset(Dataset):
         self.n = self.get_n()
         self.c = self.get_c()
         self.sz = self.get_sz()
- 
+
     def __getitem__(self, idx):
         return (self.get(self.transform, self.get_x, idx), 
                 self.get(self.target_transform, self.get_y, idx))
 
     def __len__(self): return self.n
-        
+
     def get(self, tfm, fn, idx): 
         return fn(idx) if tfm is None else tfm(fn(idx))
-        
+
     @abstractmethod
     def get_n(self): raise NotImplementedError
     @abstractmethod
@@ -109,7 +109,7 @@ class BaseDataset(Dataset):
     @property
     def is_multi(self): return False
 
-    
+
 class FilesDataset(BaseDataset):
     def __init__(self, fnames, transform, path):
         self.path,self.fnames = path,fnames
@@ -123,7 +123,7 @@ class FilesDataset(BaseDataset):
         dest = resize_imgs(self.fnames, targ, self.path, new_path)
         return self.__class__(self.fnames, self.y, self.transform, dest)
 
-            
+
 class FilesArrayDataset(FilesDataset):
     def __init__(self, fnames, y, transform, path):
         self.y=y
@@ -131,17 +131,17 @@ class FilesArrayDataset(FilesDataset):
         super().__init__(fnames, transform, path)
     def get_y(self, i): return self.y[i]
 
-    
+
 class FilesIndexArrayDataset(FilesArrayDataset):
     def get_c(self): return int(self.y.max())+1
 
-    
+
 class FilesNhotArrayDataset(FilesArrayDataset):
     def get_c(self): return self.y.shape[1]
     @property
     def is_multi(self): return True
 
-    
+
 class ArraysDataset(BaseDataset):
     def __init__(self, x, y, transform):
         self.x,self.y=x,y
@@ -154,17 +154,17 @@ class ArraysDataset(BaseDataset):
     def get_n(self): return len(self.y)
     def get_sz(self): return self.x.shape[1]
 
-    
+
 class ArraysIndexDataset(ArraysDataset):
     def get_c(self): return int(self.y.max())+1
 
-    
+
 class ArraysNhotDataset(ArraysDataset):
     def get_c(self): return self.y.shape[1]
     @property
     def is_multi(self): return True
 
-    
+
 class ModelData():
     def __init__(self, path, trn_dl, val_dl): self.path,self.trn_dl,self.val_dl = path,trn_dl,val_dl
         
@@ -177,7 +177,7 @@ class ModelData():
     @property
     def val_y(self): return self.val_ds.y
 
-    
+
 class ImageData(ModelData):
     def __init__(self, path, datasets, bs, num_workers, classes): 
         trn_ds,val_ds,fix_ds,aug_ds,test_ds,test_aug_ds = datasets
@@ -212,11 +212,11 @@ class ImageData(ModelData):
         t.close()
         return self.__class__(new_ds[0].path, new_ds, self.bs, self.num_workers, self.classes)
 
-    
+
 class ImageClassifierData(ImageData):
     @property
     def is_multi(self): return self.trn_dl.dataset.is_multi
-        
+
     @classmethod
     def get_ds(self, fn, trn, val, tfms, test=None, **kwargs):
         res = [
@@ -233,7 +233,7 @@ class ImageClassifierData(ImageData):
             ]
         else: res += [None,None]
         return res
-        
+
     @classmethod
     def from_arrays(self, path, trn, val, bs, tfms=(None,None), classes=None, num_workers=4):
         datasets = self.get_ds(ArraysIndexDataset, trn, val, tfms)
@@ -248,10 +248,10 @@ class ImageClassifierData(ImageData):
 
     @classmethod
     def from_csv(self, path, folder, csv_fname, bs, tfms,
-               val_idxs=None, suffix='', test_name=None, skip_header=True, num_workers=4): 
+               val_idxs=None, suffix='', test_name=None, skip_header=True, num_workers=4):
         fnames,y,classes = csv_source(folder, csv_fname, skip_header, suffix)
         ((val_fnames,trn_fnames),(val_y,trn_y)) = split_by_idx(val_idxs, np.array(fnames), y)
-        
+
         test_fnames = read_dir(path, test_name) if test_name else None
         f = FilesIndexArrayDataset if len(trn_y.shape)==1 else FilesNhotArrayDataset
         datasets = self.get_ds(f, (trn_fnames,trn_y), (val_fnames,val_y), tfms,
@@ -266,6 +266,7 @@ def split_by_idx(idxs, *a):
 def tfms_from_model(f_model, sz, aug_tfms=[], max_zoom=None, pad=0):
     stats = inception_stats if f_model in inception_models else imagenet_stats
     tfm_norm = Normalize(*stats)
-    val_tfm = image_gen(tfm_norm, sz, pad=pad)
-    trn_tfm=image_gen(tfm_norm, sz, tfms=aug_tfms, max_zoom=max_zoom, pad=pad)
+    tfm_denorm = Denormalize(*stats)
+    val_tfm = image_gen(tfm_norm, tfm_denorm, sz, pad=pad)
+    trn_tfm=image_gen(tfm_norm, tfm_denorm, sz, tfms=aug_tfms, max_zoom=max_zoom, pad=pad)
     return trn_tfm, val_tfm

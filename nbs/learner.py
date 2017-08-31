@@ -21,16 +21,16 @@ class Learner():
     def num_features(self): return num_features(self.model)
 
     def __getitem__(self,i): return self.children[i]
-        
+
     @property
     def children(self): return children(self.model)
-        
+
     @property
     def model(self): return self.models.model
-        
+
     @property
     def data(self): return self.data_
-        
+
     def freeze_to(self, n):
         c=self.children
         for l in c:     set_trainable(l, False)
@@ -43,14 +43,14 @@ class Learner():
     def load(self, name): load_model(self.model, self.get_model_path(name))
 
     def set_data(self, data): self.data_ = data
-    
+
     def get_cycle_end(self, name):
         if name is None: return None
         return lambda sched, cycle: self.save_cycle(name, cycle)
-    
+
     def save_cycle(self, name, cycle): self.save(f'{name}_cyc_{cycle}')
     def load_cycle(self, name, cycle): self.load(f'{name}_cyc_{cycle}')
-        
+
     def fit_gen(self, model, data, layer_opt, n_cycle, cycle_len=None, cycle_mult=1, cycle_save_name=None,
                 metrics=None, callbacks=None):
         if callbacks is None: callbacks=[]
@@ -74,7 +74,7 @@ class Learner():
         self.sched = None
         layer_opt = self.get_layer_opt(lrs, wds)
         self.fit_gen(self.model, self.data, layer_opt, n_cycle, **kwargs)
-        
+
     def lr_find(self, start_lr=1e-5, end_lr=10, wds=None):
         self.save('tmp')
         layer_opt = self.get_layer_opt(start_lr, wds)

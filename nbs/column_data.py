@@ -32,7 +32,7 @@ class ColumnarModelData(ModelData):
         ((val_df, trn_df),) = split_by_idx(val_idxs, df)
         return self.from_data_frames(path, trn_df, val_df, cols_x, col_y, bs)
 
-    
+
 class CollabFilterDataset(Dataset):
     def __init__(self, path, user_col, item_col, ratings):
         self.ratings,self.path = ratings,path
@@ -50,7 +50,7 @@ class CollabFilterDataset(Dataset):
     def from_csv(self, path, csv, user_name, item_name, rating_name):
         df = pd.read_csv(os.path.join(path,csv))
         return self.from_data_frame(path, df, user_name, item_name, rating_name)
-    
+
     def proc_col(self,col):
         uniq = col.unique()
         name2idx = {o:i for i,o in enumerate(uniq)}
@@ -66,8 +66,8 @@ class CollabFilterDataset(Dataset):
     def get_model(self, n_factors):
         model = EmbeddingDotBias(n_factors, self.n_users, self.n_items, self.min_score, self.max_score)
         return CollabFilterModel(model.cuda())
-    
-    def get_learner(self, n_factors, val_idxs, bs, **kwargs): 
+
+    def get_learner(self, n_factors, val_idxs, bs, **kwargs):
         return CollabFilterLearner(self.get_data(val_idxs, bs), self.get_model(n_factors), **kwargs)
 
 
