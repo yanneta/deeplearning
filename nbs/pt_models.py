@@ -92,8 +92,12 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
     for epoch in trange(epochs, desc='Epoch'):
         avg_loss=None
         apply_leaf(m, set_train_mode)
-        t = tqdm(data.trn_dl)
-        for (*x,y) in t:
+        #t = tqdm(data.trn_dl)
+        #for (*x,y) in t:
+        t = trange(len(data.trn_dl))
+        dl = iter(data.trn_dl)
+        for i in t:
+            *x,y =next(dl)
             loss = step(m,opt,x,y, crit)
             if avg_loss is None: avg_loss = loss
             avg_loss = avg_loss * avg_mom + loss * (1-avg_mom)
