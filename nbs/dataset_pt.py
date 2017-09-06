@@ -80,7 +80,7 @@ def csv_source(folder, csv_file, skip_header=True, suffix=''):
     return full_names, label_arr, all_labels
 
 class BaseDataset(Dataset):
-    def __init__(self, transform, target_transform):
+    def __init__(self, transform=None, target_transform=None):
         self.transform,self.target_transform = transform,target_transform
         self.lock=threading.Lock()
         self.n = self.get_n()

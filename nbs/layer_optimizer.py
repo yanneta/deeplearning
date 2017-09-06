@@ -1,7 +1,7 @@
 from imports import *
 from torch_imports import *
 
-def sum_geom(a,r,n): 
+def sum_geom(a,r,n):
     return a*n if r==1 else math.ceil(a*(1-r**n)/(1-r))
 
 conv_dict = {np.dtype('int32'): torch.IntTensor, np.dtype('int64'): torch.LongTensor,
@@ -16,7 +16,7 @@ def V(x):   return [V_(o) for o in x] if isinstance(x,list) else V_(x)
 def VV_(x): return x.cuda(async=True) if isinstance(x, Variable) else Variable(x.cuda(async=True), volatile=True)
 def VV(x):  return [VV_(o) for o in x] if isinstance(x,list) else VV_(x)
 
-def to_np(v): 
+def to_np(v):
     if isinstance(v, Variable): v=v.data
     return v.cpu().numpy()
 
@@ -29,7 +29,7 @@ def split_by_idxs(seq, idxs):
         last = idx
     yield seq[last:]
 
-def SGD_Momentum(momentum): 
+def SGD_Momentum(momentum):
     return lambda *args, **kwargs: optim.SGD(*args, momentum=momentum, **kwargs)
 
 def trainable_params_(m):
@@ -37,7 +37,7 @@ def trainable_params_(m):
 
 def chain_params(p): return list(chain(*[trainable_params_(o) for o in p]))
 
-def set_trainable_attr(m,b): 
+def set_trainable_attr(m,b):
     m.trainable=b
     for p in m.parameters(): p.requires_grad=b
 

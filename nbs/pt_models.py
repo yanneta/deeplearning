@@ -29,8 +29,6 @@ class Flatten(nn.Module):
     def __init__(self): super().__init__()
     def forward(self, x): return x.view(x.size(0), -1)
 
-#Flatten = Lambda(lambda x: x.view(x.size(0), -1))
-
 def cut_model(m, cut): return list(m.children())[:cut]
 
 def predict_to_bcolz(m, gen, arr, workers=4):
@@ -42,7 +40,7 @@ def predict_to_bcolz(m, gen, arr, workers=4):
             arr.append(y)
             arr.flush()
 
-def num_features(m): 
+def num_features(m):
     c=children(m)
     if hasattr(c[-1], 'num_features'): return c[-1].num_features
     elif hasattr(c[-1], 'out_features'): return c[-1].out_features
@@ -52,9 +50,10 @@ def num_features(m):
 
 def accuracy(preds, targs):
     preds = np.argmax(preds, axis=1)
+    print(preds,targs)
     return (preds==targs).mean()
 
-def accuracy_thresh(thresh): 
+def accuracy_thresh(thresh):
     return lambda preds,targs: accuracy_multi(preds, targs, thresh)
 
 def accuracy_multi(preds, targs, thresh):
@@ -92,8 +91,6 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
     for epoch in trange(epochs, desc='Epoch'):
         avg_loss=None
         apply_leaf(m, set_train_mode)
-        #t = tqdm(data.trn_dl)
-        #for (*x,y) in t:
         t = trange(len(data.trn_dl))
         dl = iter(data.trn_dl)
         for i in t:
@@ -118,7 +115,7 @@ def validate(m, dl, crit, metrics):
     for (*x,y) in dl:
         y = y.cuda()
         preds = m(*VV(x))
-        loss.append(crit(preds,y).data[0])
+        loss.append(to_np(crit(preds,VV(y))))
         res.append([f(to_np(preds),to_np(y)) for f in metrics])
     return [np.mean(loss)] + list(np.mean(np.stack(res),0))
 
