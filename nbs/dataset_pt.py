@@ -108,7 +108,8 @@ class BaseDataset(Dataset):
     def get_y(self, i): raise NotImplementedError
     @property
     def is_multi(self): return False
-
+    @property
+    def is_reg(self): return False
 
 class FilesDataset(BaseDataset):
     def __init__(self, fnames, transform, path):
