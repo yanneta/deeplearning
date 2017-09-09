@@ -56,7 +56,7 @@ class ConvnetBuilder():
 
 
 class ConvLearner(Learner):
-    def __init__(self, data, models, **kwargs):
+    def __init__(self, data, models, use_fc=False, **kwargs):
         self.use_fc=False
         super().__init__(data, models, **kwargs)
         self.crit = F.binary_cross_entropy if data.is_multi else F.nll_loss
@@ -64,6 +64,7 @@ class ConvLearner(Learner):
             self.metrics = [accuracy_multi] if self.data.is_multi else [accuracy]
         self.save_fc1()
         self.freeze()
+        self.use_fc=use_fc
 
     @classmethod
     def pretrained(self, f, data, ps=None, xtra_fc=None, xtra_cut=0, **kwargs):

@@ -1,7 +1,6 @@
 from imports import *
 from torch_imports import *
 from layer_optimizer import *
-
 def save_model(m, p): torch.save(m.state_dict(), p)
 def load_model(m, p): m.load_state_dict(torch.load(p))
 
@@ -50,7 +49,6 @@ def num_features(m):
 
 def accuracy(preds, targs):
     preds = np.argmax(preds, axis=1)
-    print(preds,targs)
     return (preds==targs).mean()
 
 def accuracy_thresh(thresh):
@@ -88,19 +86,21 @@ def fit(m, data, epochs, crit, opt, metrics=None, callbacks=None):
     callbacks = callbacks or []
     avg_mom=0.98
 
+    apply_leaf(m, set_train_mode)
+    batch_num,avg_loss=0,0.
     for epoch in trange(epochs, desc='Epoch'):
-        avg_loss=None
         apply_leaf(m, set_train_mode)
-        t = trange(len(data.trn_dl))
+        t = trange(len(data.trn_dl), leave=False)
         dl = iter(data.trn_dl)
         for i in t:
+            batch_num += 1
             *x,y =next(dl)
             loss = step(m,opt,x,y, crit)
-            if avg_loss is None: avg_loss = loss
             avg_loss = avg_loss * avg_mom + loss * (1-avg_mom)
-            t.set_postfix(loss=avg_loss)
+            debias_loss = avg_loss / (1 - avg_mom**batch_num)
+            t.set_postfix(loss=debias_loss)
             stop=False
-            for cb in callbacks: stop = stop or cb.on_batch_end(avg_loss)
+            for cb in callbacks: stop = stop or cb.on_batch_end(debias_loss)
             if stop: return
 
         vals = validate(m, data.val_dl, crit, metrics)

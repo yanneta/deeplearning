@@ -116,12 +116,13 @@ class FilesDataset(BaseDataset):
         super().__init__(transform, None)
     def get_n(self): return len(self.y)
     def get_sz(self): return self.transform.sz
-    def get_x(self, i): 
+    def get_x(self, i):
         im = PIL.Image.open(os.path.join(self.path, self.fnames[i])).convert('RGB')
         return np.array(im, dtype=np.float32)/255.
     def resize_imgs(self, targ, new_path):
         dest = resize_imgs(self.fnames, targ, self.path, new_path)
         return self.__class__(self.fnames, self.y, self.transform, dest)
+    def denorm(self,arr): return self.transform.denorm(np.rollaxis(to_np(arr),1,4))
 
 
 class FilesArrayDataset(FilesDataset):
@@ -147,9 +148,9 @@ class ArraysDataset(BaseDataset):
         self.x,self.y=x,y
         assert(len(x)==len(y))
         super().__init__(transform, None)
-    def get_x(self, i): 
+    def get_x(self, i):
         with self.lock: return self.x[i]
-    def get_y(self, i): 
+    def get_y(self, i):
         with self.lock: return self.y[i]
     def get_n(self): return len(self.y)
     def get_sz(self): return self.x.shape[1]
@@ -167,7 +168,7 @@ class ArraysNhotDataset(ArraysDataset):
 
 class ModelData():
     def __init__(self, path, trn_dl, val_dl): self.path,self.trn_dl,self.val_dl = path,trn_dl,val_dl
-        
+
     @property
     def trn_ds(self): return self.trn_dl.dataset
     @property
@@ -201,7 +202,7 @@ class ImageData(ModelData):
 
     def resized(self, dl, targ, new_path):
         return dl.dataset.resize_imgs(targ,new_path) if dl else None
-        
+
     def resize(self, targ, new_path):
         new_ds = []
         dls = [self.trn_dl,self.val_dl,self.fix_dl,self.aug_dl]
@@ -235,19 +236,19 @@ class ImageClassifierData(ImageData):
         return res
 
     @classmethod
-    def from_arrays(self, path, trn, val, bs, tfms=(None,None), classes=None, num_workers=4):
+    def from_arrays(self, path, trn, val, bs=64, tfms=(None,None), classes=None, num_workers=4):
         datasets = self.get_ds(ArraysIndexDataset, trn, val, tfms)
         return self(path, datasets, bs, num_workers, classes=classes)
 
     @classmethod
-    def from_paths(self, path, bs, tfms, trn_name='train', val_name='val', test_name=None, num_workers=4):
+    def from_paths(self, path, bs=64, tfms=(None,None), trn_name='train', val_name='val', test_name=None, num_workers=4):
         trn,val = [folder_source(path, o) for o in ('train', 'valid')]
         test_fnames = read_dir(path, test_name) if test_name else None
         datasets = self.get_ds(FilesIndexArrayDataset, trn, val, tfms, path=path, test=test_fnames)
         return self(path, datasets, bs, num_workers, classes=trn[2])
 
     @classmethod
-    def from_csv(self, path, folder, csv_fname, bs, tfms,
+    def from_csv(self, path, folder, csv_fname, bs=64, tfms=(None,None),
                val_idxs=None, suffix='', test_name=None, skip_header=True, num_workers=4):
         fnames,y,classes = csv_source(folder, csv_fname, skip_header, suffix)
         ((val_fnames,trn_fnames),(val_y,trn_y)) = split_by_idx(val_idxs, np.array(fnames), y)
