@@ -73,11 +73,10 @@ class ConvLearner(Learner):
         self.use_fc=False
         super().__init__(data, models, **kwargs)
         self.crit = F.binary_cross_entropy if data.is_multi else F.nll_loss
-        if self.metrics is None:
+        if self.metrics is None and not data.is_reg:
             self.metrics = [accuracy_multi] if self.data.is_multi else [accuracy]
         if data.is_reg:
-            self.crit = F.mse_loss
-            self.metrics = None
+            self.crit = F.l1_loss 
         self.save_fc1()
         self.freeze()
 
