@@ -2,13 +2,25 @@ from learner import *
 
 
 class ConvnetBuilder():
+    """Class representing a convolutional network.    
+
+    Arguments:
+        f (string): name of the model  
+        c (int): size of the last layer
+        is_multi (bool): is multilabel classification
+            (def here http://scikit-learn.org/stable/modules/multiclass.html)
+        is_reg (bool): is a regression
+        ps (float or array of float): dropout parameter
+        xtra_fc (list of ints): list of hidden layers with hidden neurons
+        xtra_cut (int): where to cut the model, detault is 0
+    """
     model_meta = {
         resnet18:[8,6], resnet34:[8,6], resnet50:[8,6], resnet101:[8,6], resnext50:[8,6],
         wrn:[8,6], dn121:[10,6], inceptionresnet_2:[5,9], inception_4:[19,8]
     }
 
-    def __init__(self, f, c, is_multi, ps=None, xtra_fc=None, xtra_cut=0):
-        self.f,self.c,self.is_multi,self.xtra_cut = f,c,is_multi,xtra_cut
+    def __init__(self, f, c, is_multi, is_reg, ps=None, xtra_fc=None, xtra_cut=0):
+        self.f,self.c,self.is_multi,self.is_reg,self.xtra_cut = f,c,is_multi,is_reg,xtra_cut
         self.ps = ps or [0.25,0.5]
         self.xtra_fc = xtra_fc or [512]
 
@@ -45,6 +57,7 @@ class ConvnetBuilder():
             res += self.create_fc_layer(ni, nf, p=self.ps[i], actn=nn.ReLU)
             ni=nf
         final_actn = nn.Sigmoid if self.is_multi else nn.LogSoftmax
+        if self.is_reg: final_actn = None 
         res += self.create_fc_layer(ni, self.c, p=self.ps[-1], actn=final_actn)
         return res
 
@@ -60,15 +73,17 @@ class ConvLearner(Learner):
         self.use_fc=False
         super().__init__(data, models, **kwargs)
         self.crit = F.binary_cross_entropy if data.is_multi else F.nll_loss
-        if self.metrics is None:
+        if self.metrics is None and not data.is_reg:
             self.metrics = [accuracy_multi] if self.data.is_multi else [accuracy]
+        if data.is_reg:
+            self.crit = F.l1_loss 
         self.save_fc1()
         self.freeze()
         self.use_fc=use_fc
 
     @classmethod
     def pretrained(self, f, data, ps=None, xtra_fc=None, xtra_cut=0, **kwargs):
-        models = ConvnetBuilder(f, data.c, data.is_multi, ps=ps, xtra_fc=xtra_fc, xtra_cut=xtra_cut)
+        models = ConvnetBuilder(f, data.c, data.is_multi, data.is_reg, ps=ps, xtra_fc=xtra_fc, xtra_cut=xtra_cut)
         return self(data, models, **kwargs)
 
     @property
